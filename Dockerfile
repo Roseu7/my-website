@@ -15,31 +15,49 @@ ENV NODE_ENV="production"
 # Throw-away build stage to reduce size of final image
 FROM base as build
 
+# Set NODE_ENV to development during build to ensure dev dependencies are installed
+ENV NODE_ENV="development"
+
 # Install packages needed to build node modules
 RUN apt-get update -qq && \
     apt-get install --no-install-recommends -y build-essential node-gyp pkg-config python-is-python3
 
+# Set environment variables to fix rollup issues
+ENV ROLLUP_DISABLE_FSEVENTS=true
+ENV npm_config_target_platform=linux
+ENV npm_config_target_arch=x64
+ENV npm_config_cache=/tmp/.npm
+
 # Install node modules
 COPY package-lock.json package.json ./
 
-# Clear npm cache and install with specific flags to fix rollup issues
+# Clean install with proper platform settings
 RUN npm cache clean --force && \
-    rm -rf node_modules && \
-    npm install --no-optional --force && \
-    npm rebuild
+    npm ci --no-audit --no-fund --force && \
+    npm rebuild --force && \
+    npm install @rollup/rollup-linux-x64-gnu --force || true
+
+# Verify remix is installed
+RUN ls -la node_modules/.bin/ | grep remix || echo "Remix not found in .bin"
+RUN npm list @remix-run/dev || echo "Remix dev not found"
 
 # Copy application code
 COPY . .
 
-# Build application with specific environment variables
-ENV ROLLUP_DISABLE_FSEVENTS=true
-RUN npm run build
+# Set NODE_ENV back to production for build
+ENV NODE_ENV="production"
+
+# Build application using npx to ensure we find the binary
+RUN npx --yes remix vite:build
 
 # Remove development dependencies
 RUN npm prune --omit=dev --force
 
 # Final stage for app image
 FROM base
+
+# Set production environment
+ENV NODE_ENV="production"
 
 # Copy built application
 COPY --from=build /app /app
