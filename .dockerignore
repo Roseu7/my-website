@@ -1,5 +1,15 @@
-node_modules
-
-/.cache
-/build
-.env
+# .dockerignore
+node_modules/
+npm-debug.log*
+.env*
+.git/
+.gitignore
+.dockerignore
+Dockerfile
+.DS_Store
+.vscode/
+coverage/
+.nyc_output/
+*.log
+build/
+.cache/

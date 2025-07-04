@@ -22,9 +22,15 @@ export default defineConfig({
     },
     server: {
         port: 5173,
-        host: true, // すべてのネットワークインターフェースでリスニング
+        host: true,
         hmr: {
-            port: 24678, // HMRポートを明示的に指定
+            port: 24678,
+        },
+    },
+    build: {
+        target: "node18",
+        rollupOptions: {
+            external: ["fsevents"],
         },
     },
 });
