@@ -6,7 +6,12 @@ import {
     ScrollRestoration,
     useLoaderData,
 } from "@remix-run/react";
-import type { LoaderFunctionArgs } from "@remix-run/node";
+import type { LoaderFunctionArgs, LinksFunction } from "@remix-run/node";
+import tailwindStylesheet from "./tailwind.css";
+
+export const links: LinksFunction = () => [
+    { rel: "stylesheet", href: tailwindStylesheet },
+];
 
 export async function loader({ request }: LoaderFunctionArgs) {
     const env = {
