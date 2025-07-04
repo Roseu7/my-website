@@ -1,4 +1,3 @@
-// vite.config.ts
 import { vitePlugin as remix } from "@remix-run/dev";
 import { defineConfig } from "vite";
 import tsconfigPaths from "vite-tsconfig-paths";
@@ -31,6 +30,16 @@ export default defineConfig({
         target: "node18",
         rollupOptions: {
             external: ["fsevents"],
+            output: {
+                manualChunks: undefined,
+            },
         },
+        // Rollupのネイティブバイナリ問題を回避
+        commonjsOptions: {
+            include: [/node_modules/],
+        },
+    },
+    optimizeDeps: {
+        include: ["react", "react-dom"],
     },
 });

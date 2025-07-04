@@ -21,16 +21,22 @@ RUN apt-get update -qq && \
 
 # Install node modules
 COPY package-lock.json package.json ./
-RUN npm ci --include=dev --force
+
+# Clear npm cache and install with specific flags to fix rollup issues
+RUN npm cache clean --force && \
+    rm -rf node_modules && \
+    npm install --no-optional --force && \
+    npm rebuild
 
 # Copy application code
 COPY . .
 
-# Build application
+# Build application with specific environment variables
+ENV ROLLUP_DISABLE_FSEVENTS=true
 RUN npm run build
 
 # Remove development dependencies
-RUN npm prune --omit=dev
+RUN npm prune --omit=dev --force
 
 # Final stage for app image
 FROM base
