@@ -86,52 +86,20 @@ function createRealtimeClient(roomId: string) {
                 .subscribe((status: string) => {
                     console.log('Realtime subscription status:', status);
                     if (callbacks.onConnectionStateChanged) {
-                        let connectionState;
-                        switch (status) {
-                            case 'SUBSCRIBED':
-                                connectionState = {
-                                    room: 'connected' as const,
-                                    game: 'connected' as const,
-                                    lastError: undefined
-                                };
-                                break;
-                            case 'CHANNEL_ERROR':
-                                connectionState = {
-                                    room: 'error' as const,
-                                    game: 'connected' as const,
-                                    lastError: 'リアルタイム接続でエラーが発生しました'
-                                };
-                                break;
-                            case 'TIMED_OUT':
-                                connectionState = {
-                                    room: 'disconnected' as const,
-                                    game: 'connected' as const,
-                                    lastError: 'リアルタイム接続がタイムアウトしました'
-                                };
-                                break;
-                            case 'CLOSED':
-                                connectionState = {
-                                    room: 'disconnected' as const,
-                                    game: 'connected' as const,
-                                    lastError: 'リアルタイム接続が閉じられました'
-                                };
-                                break;
-                            default:
-                                connectionState = {
-                                    room: 'connecting' as const,
-                                    game: 'connected' as const,
-                                    lastError: undefined
-                                };
-                                break;
-                        }
-                        callbacks.onConnectionStateChanged(connectionState);
+                        callbacks.onConnectionStateChanged({
+                            room: status === 'SUBSCRIBED' ? 'connected' : 'connecting',
+                            game: 'connected',
+                            lastError: undefined
+                        });
                     }
                 });
 
             return channel;
         },
-        cleanup: () => {
-            // クリーンアップ処理
+        unsubscribe: (channel: any) => {
+            if (channel) {
+                supabase.removeChannel(channel);
+            }
         },
         forceReconnect: () => {
             window.location.reload();
@@ -276,163 +244,122 @@ export default function CantStopLobby() {
                     {
                         event: '*',
                         schema: 'public',
-                        table: 'game_rooms',
-                        filter: `id=eq.${room.id}`
+                        table: 'room_participants',
+                        filter: `room_id=eq.${room.id}`
                     },
-                    (payload) => {
-                        console.log('Room update received:', payload);
-                        if (payload.eventType === 'UPDATE' && payload.new) {
-                            setRoom(payload.new as any);
+                    async (payload) => {
+                        console.log('Participants changed:', payload);
+                        
+                        // 参加者情報を即座に更新（ページリロードなし）
+                        try {
+                            const response = await fetch(window.location.pathname, {
+                                headers: {
+                                    'Accept': 'application/json',
+                                    'Cache-Control': 'no-cache'
+                                }
+                            });
                             
-                            // ゲーム開始時の処理
-                            if (payload.new.status === 'playing') {
-                                window.location.href = `/games/cant-stop/game/${room.id}`;
+                            if (response.ok) {
+                                const data = await response.json();
+                                setParticipants(data.participants);
+                                setWinStats(data.winStats);
+                                console.log('参加者情報を更新しました');
                             }
+                        } catch (error) {
+                            console.error('参加者情報更新エラー:', error);
+                            // フォールバック：エラー時のみページリロード
+                            setTimeout(() => window.location.reload(), 1000);
                         }
                     }
                 )
                 .on(
                     'postgres_changes',
                     {
-                        event: '*',
+                        event: 'UPDATE',
                         schema: 'public',
-                        table: 'room_participants',
-                        filter: `room_id=eq.${room.id}`
+                        table: 'game_rooms',
+                        filter: `id=eq.${room.id}`
                     },
-                    async (payload) => {
-                        console.log('Participants update received:', payload);
-                        
-                        // 参加者の変更があった場合、ページをリロード（簡易版）
-                        // TODO: より効率的なデータ更新方法を実装
-                        window.location.reload();
+                    (payload: any) => {
+                        console.log('Room status changed:', payload);
+                        if (payload.new?.status === 'playing') {
+                            window.location.href = `/games/cant-stop/game/${room.room_id}`;
+                        } else {
+                            setRoom(prev => ({ ...prev, ...payload.new }));
+                        }
                     }
                 )
-                .subscribe((status) => {
-                    console.log('Realtime subscription status:', status);
-                    if (status === 'SUBSCRIBED') {
-                        setConnectionState(prev => ({ ...prev, room: 'connected' }));
-                    } else if (status === 'CHANNEL_ERROR') {
-                        setConnectionState(prev => ({ 
-                            ...prev, 
-                            room: 'error',
-                            lastError: 'リアルタイム接続でエラーが発生しました'
-                        }));
-                    } else if (status === 'TIMED_OUT') {
-                        setConnectionState(prev => ({ 
-                            ...prev, 
-                            room: 'disconnected',
-                            lastError: 'リアルタイム接続がタイムアウトしました'
-                        }));
-                        
-                        // タイムアウト時に自動で再接続を試行
-                        console.log('タイムアウトを検知。30秒後に自動再接続します...');
-                        setTimeout(() => {
-                            console.log('自動再接続を実行中...');
-                            window.location.reload();
-                        }, 30000); // 30秒後に自動リロード
-                        
-                    } else if (status === 'CLOSED') {
-                        setConnectionState(prev => ({ 
-                            ...prev, 
-                            room: 'disconnected',
-                            lastError: '接続が閉じられました'
-                        }));
+                .subscribe((status: string) => {
+                    console.log('Subscription status:', status);
+                    switch (status) {
+                        case 'SUBSCRIBED':
+                            setConnectionState(prev => ({ ...prev, room: 'connected' }));
+                            break;
+                        case 'CLOSED':
+                            setConnectionState(prev => ({ ...prev, room: 'disconnected' }));
+                            break;
+                        case 'CHANNEL_ERROR':
+                            setConnectionState(prev => ({ ...prev, room: 'error' }));
+                            break;
+                        default:
+                            setConnectionState(prev => ({ ...prev, room: 'connecting' }));
                     }
                 });
 
-            // クリーンアップ
             return () => {
-                console.log('Cleaning up realtime subscription');
                 supabase.removeChannel(roomChannel);
             };
         } catch (error) {
-            console.error('Failed to setup realtime subscription:', error);
-            setConnectionState(prev => ({ 
-                ...prev, 
-                room: 'error',
-                lastError: 'リアルタイム機能の初期化に失敗しました'
-            }));
+            console.error('Realtime setup error:', error);
+            setConnectionState(prev => ({ ...prev, room: 'error', lastError: 'リアルタイム通信エラー' }));
         }
-    }, [room.id]);
-
-    // 手動再接続
-    const handleReconnect = async () => {
-        console.log('手動再接続を開始...');
-        
-        // 接続状態を接続中に設定
-        setConnectionState(prev => ({ 
-            ...prev, 
-            room: 'connecting',
-            lastError: undefined 
-        }));
-        
-        try {
-            // 最新データを再取得
-            const response = await fetch(window.location.pathname, {
-                headers: {
-                    'Accept': 'application/json',
-                }
-            });
-            
-            if (response.ok) {
-                // ページをリロードして確実に最新状態を取得
-                window.location.reload();
-            } else {
-                throw new Error('データの再取得に失敗しました');
-            }
-        } catch (error) {
-            console.error('再接続エラー:', error);
-            setConnectionState(prev => ({ 
-                ...prev, 
-                room: 'error',
-                lastError: '再接続に失敗しました。ページを更新してください。'
-            }));
-        }
-    };
-
-    // ゲーム開始の条件チェック
-    const canStartGame = () => {
-        return isHost && 
-               participants.length >= 2 && 
-               participants.every((p: any) => p.is_ready);
-    };
+    }, [room.id, room.room_id]);
 
     // プレイヤーカラーを取得
-    const getParticipantColor = (participantIndex: number) => {
-        return getPlayerColor(participantIndex);
+    const getParticipantColor = (index: number) => {
+        return getPlayerColor(index);
     };
+
+    // 開始条件チェック
+    const canStartGame = participants.length >= 2 && participants.every((p: any) => p.is_ready);
+    const isSubmitting = navigation.state === 'submitting';
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
             <Header user={user} />
 
-            <main className="flex-1 mx-auto max-w-4xl px-6 py-8 lg:px-8">
-                {/* ヘッダー情報 */}
+            {/* メインコンテンツ */}
+            <main className="flex-1 mx-auto max-w-7xl px-6 py-8 lg:px-8">
+                {/* ページタイトル */}
                 <div className="text-center mb-8">
-                    <h1 className="text-3xl font-bold text-gray-900 mb-2">
-                        Can't Stop
+                    <h1 className="text-4xl font-bold text-gray-900 mb-4">
+                        ルーム: {room.room_id}
                     </h1>
-                    <div className="flex items-center justify-center space-x-4 text-lg">
-                        <span className="text-gray-600">ルームID:</span>
-                        <span className="font-mono bg-gray-100 px-3 py-1 rounded text-indigo-600 font-semibold">
-                            {room.room_id}
+                    <p className="text-lg text-gray-600">
+                        Can't Stop ゲームロビー
+                    </p>
+                </div>
+
+                {/* 接続状態表示 */}
+                <div className="mb-6 flex justify-center">
+                    <div className="flex items-center space-x-2 text-sm">
+                        <div className={`w-3 h-3 rounded-full ${
+                            connectionState.room === 'connected' ? 'bg-green-400' :
+                            connectionState.room === 'error' ? 'bg-red-400' : 'bg-yellow-400'
+                        }`} />
+                        <span className="text-gray-500">
+                            {connectionState.room === 'connected' ? '接続中' :
+                             connectionState.room === 'error' ? '接続エラー' : '再接続中...'}
                         </span>
-                        <button
-                            onClick={() => navigator.clipboard.writeText(room.room_id)}
-                            className="text-indigo-600 hover:text-indigo-800 transition-colors"
-                            title="ルームIDをコピー"
-                        >
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                            </svg>
-                        </button>
                     </div>
                 </div>
 
                 {/* エラーメッセージ */}
                 {actionData && 'error' in actionData && (
-                    <div className="mb-4 p-4 bg-red-100 border border-red-300 rounded-lg text-red-700 text-center">
-                        {typeof actionData.error === 'string' ? actionData.error : String(actionData.error)}
+                    <div className="mb-6 bg-red-50 border border-red-200 rounded-md p-3">
+                        <p className="text-sm text-red-600">
+                            {typeof actionData.error === 'string' ? actionData.error : 'エラーが発生しました'}
+                        </p>
                     </div>
                 )}
 
@@ -497,10 +424,6 @@ export default function CantStopLobby() {
                                                         : 'bg-gray-100 text-gray-800'
                                                 }`}>
                                                     {participant.is_ready ? '準備完了' : '待機中'}
-                                                    {/* デバッグ情報 */}
-                                                    <span className="ml-1 text-xs opacity-50">
-                                                        ({participant.user_id.slice(-4)}: {participant.is_ready ? 'T' : 'F'})
-                                                    </span>
                                                 </span>
                                             </div>
                                         </div>
@@ -532,7 +455,7 @@ export default function CantStopLobby() {
                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                                                 </svg>
                                             </div>
-                                            <span>プレイヤー待ち...</span>
+                                            <span>空きスロット</span>
                                         </div>
                                     </div>
                                 ))}
@@ -540,232 +463,181 @@ export default function CantStopLobby() {
                         </div>
                     </div>
 
-                    {/* コントロールパネル */}
-                    <div className="space-y-6 min-w-0 flex-shrink-0">
-                        {/* 準備状態切り替え */}
-                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6 min-w-60">
-                            <Form method="post" replace>
+                    {/* サイドバー */}
+                    <div className="space-y-6">
+                        {/* 準備完了ボタン */}
+                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6">
+                            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                                準備状態
+                            </h3>
+                            <Form method="post">
                                 <input type="hidden" name="_action" value="toggle_ready" />
                                 <button
                                     type="submit"
-                                    disabled={navigation.state === "submitting"}
-                                    className={`group w-full h-12 px-4 rounded-lg font-medium transition-all duration-200 relative flex items-center justify-center disabled:opacity-50 ${
+                                    disabled={isSubmitting}
+                                    className={`w-full py-3 px-4 rounded-lg font-medium transition-colors disabled:opacity-50 ${
                                         isReady
-                                            ? 'bg-green-600 hover:bg-red-600 text-white'
-                                            : 'bg-gray-200 hover:bg-green-600 text-gray-700 hover:text-white'
+                                            ? 'bg-yellow-500 hover:bg-yellow-600 text-white'
+                                            : 'bg-green-500 hover:bg-green-600 text-white'
                                     }`}
                                 >
-                                    <span className={`transition-opacity duration-200 ${isReady ? 'group-hover:opacity-0' : ''}`}>
-                                        {navigation.state === "submitting" 
-                                            ? '更新中...' 
-                                            : isReady ? '準備完了' : '準備する'
-                                        }
-                                    </span>
-                                    {isReady && navigation.state !== "submitting" && (
-                                        <span className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200">
-                                            準備を取り消す
-                                        </span>
-                                    )}
+                                    {isSubmitting 
+                                        ? '更新中...' 
+                                        : isReady 
+                                            ? '準備解除' 
+                                            : '準備完了'
+                                    }
                                 </button>
                             </Form>
-                            
-                            {/* デバッグ情報 */}
-                            <div className="mt-2 text-xs text-gray-500">
-                                あなたの状態: {isReady ? '準備完了' : '待機中'} 
-                                {navigation.state === "submitting" && ' (送信中)'}
-                            </div>
                         </div>
 
                         {/* ゲーム開始（ホストのみ） */}
                         {isHost && (
-                            <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6 min-w-60">
-                                <Form method="post">
-                                    <input type="hidden" name="_action" value="start_game" />
+                            <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6">
+                                <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                                    ゲーム開始
+                                </h3>
+                                {canStartGame ? (
+                                    <Form method="post">
+                                        <input type="hidden" name="_action" value="start_game" />
+                                        <button
+                                            type="submit"
+                                            disabled={isSubmitting}
+                                            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-4 rounded-lg transition-colors disabled:opacity-50"
+                                        >
+                                            {isSubmitting ? 'ゲーム開始中...' : 'ゲーム開始'}
+                                        </button>
+                                    </Form>
+                                ) : (
+                                    <div className="text-center">
+                                        <button
+                                            disabled
+                                            className="w-full bg-gray-300 text-gray-500 font-medium py-3 px-4 rounded-lg cursor-not-allowed"
+                                        >
+                                            全員準備完了待ち
+                                        </button>
+                                        <p className="text-xs text-gray-500 mt-2">
+                                            最低2人 & 全員準備完了が必要です
+                                        </p>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+
+                        {/* 勝利統計 */}
+                        {winStats.length > 0 && (
+                            <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6">
+                                <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                                    勝利統計
+                                </h3>
+                                <div className="space-y-2">
+                                    {winStats
+                                        .sort((a, b) => b.wins_count - a.wins_count)
+                                        .map((stat, index) => {
+                                            const participant = participants.find(p => p.user_id === stat.user_id);
+                                            return (
+                                                <div key={stat.id} className="flex items-center justify-between">
+                                                    <div className="flex items-center space-x-2">
+                                                        <span className="text-sm font-medium">
+                                                            #{index + 1}
+                                                        </span>
+                                                        <span className="text-sm text-gray-700">
+                                                            {participant?.user?.username || 'Unknown User'}
+                                                        </span>
+                                                    </div>
+                                                    <span className="text-sm font-semibold text-green-600">
+                                                        {stat.wins_count}勝
+                                                    </span>
+                                                </div>
+                                            );
+                                        })}
+                                </div>
+                            </div>
+                        )}
+
+                        {/* ルーム操作 */}
+                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6">
+                            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                                ルーム操作
+                            </h3>
+                            <div className="space-y-3">
+                                <button
+                                    onClick={() => setShowExitConfirm(true)}
+                                    className="w-full bg-red-100 hover:bg-red-200 text-red-800 font-medium py-2 px-4 rounded-lg transition-colors"
+                                >
+                                    ルームから退出
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* 退出確認モーダル */}
+                {showExitConfirm && (
+                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                        <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+                            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                                ルームから退出しますか？
+                            </h3>
+                            <p className="text-gray-600 mb-6">
+                                この操作は取り消せません。
+                            </p>
+                            <div className="flex space-x-3">
+                                <button
+                                    onClick={() => setShowExitConfirm(false)}
+                                    className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-800 font-medium py-2 px-4 rounded-lg transition-colors"
+                                >
+                                    キャンセル
+                                </button>
+                                <Form method="post" className="flex-1">
+                                    <input type="hidden" name="_action" value="leave" />
                                     <button
                                         type="submit"
-                                        disabled={!canStartGame() || navigation.state === "submitting"}
-                                        className={`w-full h-12 px-4 rounded-lg font-medium transition-colors flex items-center justify-center ${
-                                            canStartGame() && navigation.state !== "submitting"
-                                                ? 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                                                : 'bg-gray-300 text-gray-500 cursor-not-allowed'
-                                        }`}
+                                        className="w-full bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
                                     >
-                                        <svg className="w-5 h-5 mr-2 inline" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h8m-9-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                        </svg>
-                                        <div className="flex flex-col items-center">
-                                            <span>スタート</span>
-                                            {!canStartGame() && (
-                                                <span className="text-[10px] leading-none mt-0.5">
-                                                    全員の準備完了が必要
-                                                </span>
-                                            )}
-                                        </div>
+                                        退出
                                     </button>
                                 </Form>
                             </div>
-                        )}
-
-                        {/* ルーム設定（ホストのみ） */}
-                        {isHost && (
-                            <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6 min-w-60">
-                                <button
-                                    onClick={() => console.log("ルーム設定")}
-                                    className="w-full h-10 px-4 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg transition-colors flex items-center justify-center"
-                                >
-                                    ルーム設定
-                                </button>
-                            </div>
-                        )}
-
-                        {/* 個人設定 */}
-                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6 min-w-60">
-                            <button
-                                onClick={() => setShowSettings(!showSettings)}
-                                className="w-full h-10 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors flex items-center justify-center"
-                            >
-                                個人設定
-                            </button>
-                        </div>
-
-                        {/* 退出ボタン */}
-                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6 min-w-60">
-                            <button
-                                onClick={() => setShowExitConfirm(true)}
-                                className="w-full h-10 px-4 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors flex items-center justify-center"
-                            >
-                                ルーム退出
-                            </button>
                         </div>
                     </div>
-                </div>
+                )}
+
+                {/* キック確認モーダル */}
+                {kickConfirmPlayer && (
+                    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                        <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+                            <h3 className="text-lg font-semibold text-gray-900 mb-4">
+                                プレイヤーをキックしますか？
+                            </h3>
+                            <p className="text-gray-600 mb-6">
+                                {participants.find(p => p.user_id === kickConfirmPlayer)?.user?.username || 'Unknown User'} をルームから除外します。
+                            </p>
+                            <div className="flex space-x-3">
+                                <button
+                                    onClick={() => setKickConfirmPlayer(null)}
+                                    className="flex-1 bg-gray-100 hover:bg-gray-200 text-gray-800 font-medium py-2 px-4 rounded-lg transition-colors"
+                                >
+                                    キャンセル
+                                </button>
+                                <Form method="post" className="flex-1">
+                                    <input type="hidden" name="_action" value="kick" />
+                                    <input type="hidden" name="targetUserId" value={kickConfirmPlayer} />
+                                    <button
+                                        type="submit"
+                                        onClick={() => setKickConfirmPlayer(null)}
+                                        className="w-full bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors"
+                                    >
+                                        キック
+                                    </button>
+                                </Form>
+                            </div>
+                        </div>
+                    </div>
+                )}
             </main>
 
-            {/* 個人設定モーダル */}
-            {showSettings && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg p-6 max-w-md mx-4 w-full">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-lg font-medium text-gray-900">
-                                個人設定
-                            </h3>
-                            <button
-                                onClick={() => setShowSettings(false)}
-                                className="text-gray-400 hover:text-gray-600"
-                            >
-                                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                </svg>
-                            </button>
-                        </div>
-                        <div className="space-y-4">
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                    サウンド設定
-                                </label>
-                                <div className="flex items-center space-x-2">
-                                    <input type="checkbox" id="sound" className="rounded" defaultChecked />
-                                    <label htmlFor="sound" className="text-sm text-gray-600">効果音を有効にする</label>
-                                </div>
-                            </div>
-                            <div>
-                                <label className="block text-sm font-medium text-gray-700 mb-2">
-                                    通知設定
-                                </label>
-                                <div className="flex items-center space-x-2">
-                                    <input type="checkbox" id="notifications" className="rounded" defaultChecked />
-                                    <label htmlFor="notifications" className="text-sm text-gray-600">ターン通知を有効にする</label>
-                                </div>
-                            </div>
-                        </div>
-                        <div className="mt-6 flex justify-end">
-                            <button
-                                onClick={() => setShowSettings(false)}
-                                className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg transition-colors"
-                            >
-                                保存
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* キック確認モーダル */}
-            {kickConfirmPlayer && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg p-6 max-w-md mx-4">
-                        <h3 className="text-lg font-medium text-gray-900 mb-4">
-                            プレイヤーをキック
-                        </h3>
-                        <p className="text-gray-600 mb-6">
-                            {participants.find((p: any) => p.user_id === kickConfirmPlayer)?.user?.username || 'このユーザー'} をルームからキックしますか？
-                        </p>
-                        <div className="flex space-x-4">
-                            <button
-                                onClick={() => setKickConfirmPlayer(null)}
-                                className="flex-1 py-2 px-4 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition-colors"
-                            >
-                                キャンセル
-                            </button>
-                            <Form method="post" className="flex-1">
-                                <input type="hidden" name="_action" value="kick" />
-                                <input type="hidden" name="targetUserId" value={kickConfirmPlayer} />
-                                <button
-                                    type="submit"
-                                    onClick={() => setKickConfirmPlayer(null)}
-                                    className="w-full py-2 px-4 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
-                                >
-                                    キックする
-                                </button>
-                            </Form>
-                        </div>
-                    </div>
-                </div>
-            )}
-
-            {/* 退出確認モーダル */}
-            {showExitConfirm && (
-                <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-                    <div className="bg-white rounded-lg p-6 max-w-md mx-4">
-                        <h3 className="text-lg font-medium text-gray-900 mb-4">
-                            ルーム退出の確認
-                        </h3>
-                        <p className="text-gray-600 mb-6">
-                            本当にルームを退出しますか？
-                            {isHost && (
-                                <span className="block mt-2 text-orange-600 font-medium">
-                                    あなたはホストです。退出すると他の参加者にホスト権限が移譲されます。
-                                </span>
-                            )}
-                        </p>
-                        <div className="flex space-x-4">
-                            <button
-                                onClick={() => setShowExitConfirm(false)}
-                                className="flex-1 py-2 px-4 bg-gray-200 hover:bg-gray-300 text-gray-700 rounded-lg transition-colors"
-                            >
-                                キャンセル
-                            </button>
-                            <Form method="post" className="flex-1">
-                                <input type="hidden" name="_action" value="leave" />
-                                <button
-                                    type="submit"
-                                    className="w-full py-2 px-4 bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors"
-                                >
-                                    退出する
-                                </button>
-                            </Form>
-                        </div>
-                    </div>
-                </div>
-            )}
-
             <Footer />
-
-            {/* 接続状態表示 */}
-            <ConnectionStatus 
-                connectionState={connectionState}
-                onReconnect={handleReconnect}
-            />
         </div>
     );
 }

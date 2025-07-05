@@ -1,7 +1,6 @@
 import { useState, useEffect, useRef } from "react";
-import type { GameLog as GameLogType, Player } from "~//games/cant-stop/utils/types";
+import type { GameLog as GameLogType, Player } from "~/games/cant-stop/utils/types";
 import { UI_SETTINGS } from "~/games/cant-stop/utils/constants";
-import { formatGameDuration } from "~/games/cant-stop/utils/helpers";
 
 interface GameLogProps {
     logs: GameLogType[];
@@ -198,32 +197,55 @@ export function GameLog({
     };
 
     const filteredLogs = getFilteredLogs();
-    const hasMoreLogs = logs.length > maxDisplayCount;
 
     return (
         <div className={`bg-white rounded-lg border border-gray-200 ${className}`}>
             {/* ヘッダー */}
             <div className="flex items-center justify-between p-4 border-b border-gray-200">
-                <h3 className="text-lg font-semibold text-gray-900">ゲームログ</h3>
-                
-                <div className="flex items-center space-x-2">
+                <div className="flex items-center space-x-3">
+                    <h3 className="text-lg font-semibold text-gray-900">ゲームログ</h3>
+                    
                     {/* フィルター */}
-                    <select
-                        value={filter}
-                        onChange={(e) => setFilter(e.target.value as typeof filter)}
-                        className="text-sm border border-gray-300 rounded px-2 py-1"
-                    >
-                        <option value="all">すべて</option>
-                        <option value="system">システム</option>
-                        <option value="player">プレイヤー</option>
-                    </select>
-
-                    {/* 展開/折りたたみボタン */}
-                    {hasMoreLogs && (
+                    <div className="flex items-center space-x-1">
                         <button
-                            type="button"
+                            onClick={() => setFilter('all')}
+                            className={`px-2 py-1 text-xs rounded transition-colors ${
+                                filter === 'all' 
+                                    ? 'bg-blue-100 text-blue-800' 
+                                    : 'text-gray-500 hover:text-gray-700'
+                            }`}
+                        >
+                            すべて
+                        </button>
+                        <button
+                            onClick={() => setFilter('player')}
+                            className={`px-2 py-1 text-xs rounded transition-colors ${
+                                filter === 'player' 
+                                    ? 'bg-blue-100 text-blue-800' 
+                                    : 'text-gray-500 hover:text-gray-700'
+                            }`}
+                        >
+                            アクション
+                        </button>
+                        <button
+                            onClick={() => setFilter('system')}
+                            className={`px-2 py-1 text-xs rounded transition-colors ${
+                                filter === 'system' 
+                                    ? 'bg-blue-100 text-blue-800' 
+                                    : 'text-gray-500 hover:text-gray-700'
+                            }`}
+                        >
+                            システム
+                        </button>
+                    </div>
+                </div>
+
+                <div className="flex items-center space-x-2">
+                    {/* 展開ボタン */}
+                    {logs.length > maxDisplayCount && (
+                        <button
                             onClick={() => setIsExpanded(!isExpanded)}
-                            className="text-sm text-indigo-600 hover:text-indigo-800 font-medium"
+                            className="text-sm text-blue-600 hover:text-blue-800 transition-colors"
                         >
                             {isExpanded ? '折りたたむ' : 'すべて表示'}
                         </button>
