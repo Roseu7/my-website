@@ -6,6 +6,11 @@ export async function loader({ request }: LoaderFunctionArgs) {
     const url = new URL(request.url);
     const code = url.searchParams.get("code");
     const error = url.searchParams.get("error");
+    const redirectTo = url.searchParams.get("redirectTo") || "/";
+    
+    console.log('Auth callback - code exists:', !!code);
+    console.log('Auth callback - error:', error);
+    console.log('Auth callback - redirectTo:', redirectTo);
     
     if (error) {
         console.error("Auth callback error:", error);
@@ -26,8 +31,10 @@ export async function loader({ request }: LoaderFunctionArgs) {
             return redirect("/login?error=exchange_failed");
         }
         
-        // 認証成功、ホームページにリダイレクト
-        return redirect("/", { headers });
+        console.log('Auth callback - authentication successful, redirecting to:', redirectTo);
+        
+        // 認証成功、元のページまたはホームページにリダイレクト
+        return redirect(redirectTo, { headers });
         
     } catch (error) {
         console.error("Auth callback unexpected error:", error);

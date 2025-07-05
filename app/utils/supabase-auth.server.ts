@@ -54,6 +54,7 @@ export async function getUserFromSession(request: Request): Promise<User | null>
         const { data: { user }, error } = await supabase.auth.getUser();
         
         if (error || !user) {
+            console.log('No user found or error:', error?.message);
             return null;
         }
 
@@ -61,25 +62,40 @@ export async function getUserFromSession(request: Request): Promise<User | null>
         const discordData = user.user_metadata;
         const customClaims = discordData?.custom_claims;
         
-        return {
+        // より包括的なユーザー名の取得
+        const username = customClaims?.global_name ||
+                        discordData?.full_name ||
+                        discordData?.name ||
+                        discordData?.display_name ||
+                        discordData?.username ||
+                        user.email?.split('@')[0] ||
+                        `User${user.id.slice(-4)}`;
+        
+        const formattedUser = {
             id: user.id,
             email: user.email || undefined,
-            username: customClaims?.global_name || discordData?.full_name || discordData?.name || "User",
+            username: username,
             discriminator: discordData?.discriminator || undefined,
             avatar: discordData?.avatar_url || undefined,
             discordId: discordData?.provider_id || undefined,
         };
+        
+        console.log('User session data:', formattedUser);
+        return formattedUser;
     } catch (error) {
         console.error("Error getting user from session:", error);
         return null;
     }
 }
 
-// ログイン必須のページ用のヘルパー
+// ログイン必須のページ用のヘルパー（現在のページへのリダイレクトを設定）
 export async function requireUser(request: Request): Promise<User> {
     const user = await getUserFromSession(request);
     if (!user) {
-        throw redirect("/auth/discord");
+        // 現在のURLを認証後のリダイレクト先として設定
+        const currentUrl = new URL(request.url);
+        const redirectTo = `${currentUrl.pathname}${currentUrl.search}`;
+        throw redirect(`/auth/discord?redirectTo=${encodeURIComponent(redirectTo)}`);
     }
     return user;
 }

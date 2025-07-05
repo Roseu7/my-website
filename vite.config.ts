@@ -27,7 +27,7 @@ export default defineConfig({
                     // Games routes
                     route("games", "games/route.tsx");
                     
-                    // Can't Stop game routes（独立したルート）
+                    // Can't Stop game routes
                     route("games/cant-stop", "games/cant-stop/route.tsx");
                     route("games/cant-stop/lobby/:roomId", "games/cant-stop/lobby.tsx");
                     route("games/cant-stop/game/:roomId", "games/cant-stop/game.tsx");

@@ -11,9 +11,11 @@ import { ROOM_ID_SETTINGS, ERROR_MESSAGES } from "~/games/cant-stop/utils/consta
 export async function loader({ request }: LoaderFunctionArgs) {
     const user = await getUserFromSession(request);
     
-    // ログインが必須
+    // ログインが必須の場合、現在のURLを認証後のリダイレクト先として設定
     if (!user) {
-        return redirect("/login");
+        const currentUrl = new URL(request.url);
+        const redirectTo = `${currentUrl.pathname}${currentUrl.search}`;
+        return redirect(`/auth/discord?redirectTo=${encodeURIComponent(redirectTo)}`);
     }
     
     return json({ user });
@@ -22,7 +24,9 @@ export async function loader({ request }: LoaderFunctionArgs) {
 export async function action({ request }: ActionFunctionArgs) {
     const user = await getUserFromSession(request);
     if (!user) {
-        return redirect("/login");
+        const currentUrl = new URL(request.url);
+        const redirectTo = `${currentUrl.pathname}${currentUrl.search}`;
+        return redirect(`/auth/discord?redirectTo=${encodeURIComponent(redirectTo)}`);
     }
 
     const formData = await request.formData();
@@ -113,33 +117,24 @@ export default function CantStop() {
                             className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-semibold py-3 px-4 rounded-lg hover:shadow-md transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {isSubmitting ? (
-                                <div className="flex items-center justify-center space-x-2">
-                                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
-                                    <span>参加中...</span>
-                                </div>
+                                <span className="flex items-center justify-center">
+                                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                                    </svg>
+                                    参加中...
+                                </span>
                             ) : (
-                                "ルームに参加"
+                                'ルームに参加'
                             )}
                         </button>
                     </Form>
-
-                    {/* ゲーム説明 */}
-                    <div className="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg">
-                        <h3 className="text-sm font-semibold text-blue-900 mb-2">
-                            ゲームルール
-                        </h3>
-                        <ul className="text-sm text-blue-800 space-y-1">
-                            <li>• 4つのサイコロを振って進む</li>
-                            <li>• 3つのコラムを完成させて勝利</li>
-                            <li>• リスクとリターンを考えて戦略を立てよう</li>
-                        </ul>
-                    </div>
 
                     {/* 戻るリンク */}
                     <div className="mt-6 text-center">
                         <Link
                             to="/games"
-                            className="text-indigo-600 hover:text-indigo-800 text-sm font-medium transition-colors"
+                            className="text-sm text-gray-600 hover:text-indigo-600 transition-colors"
                         >
                             ← ゲーム一覧に戻る
                         </Link>

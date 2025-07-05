@@ -91,7 +91,7 @@ export function isColumnCompleted(column: number, progress: number): boolean {
  * プレイヤーの勝利条件をチェック
  */
 export function checkPlayerVictory(playerId: string, gameData: GameData): boolean {
-    const completedCount = Object.values(gameData.completedColumns)
+    const completedCount = Object.values(gameData.completedColumns || {})
         .filter(completerId => completerId === playerId)
         .length;
     
@@ -99,9 +99,23 @@ export function checkPlayerVictory(playerId: string, gameData: GameData): boolea
 }
 
 /**
- * 次のプレイヤーを取得
+ * 次のプレイヤーを取得（string[]版）
  */
 export function getNextPlayer(
+    currentPlayerId: string,
+    playerIds: string[]
+): string {
+    const currentIndex = playerIds.findIndex(id => id === currentPlayerId);
+    if (currentIndex === -1) return playerIds[0] || currentPlayerId;
+    
+    const nextIndex = (currentIndex + 1) % playerIds.length;
+    return playerIds[nextIndex];
+}
+
+/**
+ * 次のプレイヤーを取得（Player[]版）
+ */
+export function getNextPlayerFromArray(
     currentPlayerId: string,
     players: Player[]
 ): Player | null {
@@ -158,13 +172,13 @@ export function calculateColumnOffset(columnNumber: number): {
  */
 export function createGameLogMessage(
     type: 'dice_roll' | 'combination_selected' | 'progress' | 'stop' | 'bust' | 'column_completed' | 'victory',
-    data?: any
+    data?: { dice?: number[]; combo?: number[]; column?: number; columns?: number }
 ): string {
     switch (type) {
         case 'dice_roll':
-            return `サイコロ: ${data.dice.join(', ')}`;
+            return `サイコロ: ${data?.dice?.join(', ') || ''}`;
         case 'combination_selected':
-            return `組み合わせ「${data.combination[0]}と${data.combination[1]}」を選択`;
+            return `組み合わせ「${data?.combo?.[0]}と${data?.combo?.[1]}」を選択しました`;
         case 'progress':
             return '進行しました';
         case 'stop':
@@ -172,59 +186,18 @@ export function createGameLogMessage(
         case 'bust':
             return 'バスト！一時進行がリセットされました';
         case 'column_completed':
-            return `コラム${data.column}を完成`;
+            return `コラム${data?.column}を完成`;
         case 'victory':
-            return `${data.columns}つのコラムを完成させて勝利！`;
+            return `${data?.columns}つのコラムを完成させて勝利！`;
         default:
             return '';
     }
 }
 
 /**
- * 時間をフォーマット（ゲーム時間表示用）
+ * ローカルストレージヘルパー（ブラウザ環境でのみ動作）
  */
-export function formatGameDuration(seconds: number): string {
-    const minutes = Math.floor(seconds / 60);
-    const remainingSeconds = seconds % 60;
-    
-    if (minutes === 0) {
-        return `${remainingSeconds}秒`;
-    }
-    
-    return `${minutes}分${remainingSeconds}秒`;
-}
-
-/**
- * 配列をシャッフル（プレイヤー順序等で使用）
- */
-export function shuffleArray<T>(array: T[]): T[] {
-    const shuffled = [...array];
-    for (let i = shuffled.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
-    }
-    return shuffled;
-}
-
-/**
- * デバウンス関数（入力遅延用）
- */
-export function debounce<T extends (...args: any[]) => any>(
-    func: T,
-    delay: number
-): (...args: Parameters<T>) => void {
-    let timeoutId: NodeJS.Timeout;
-    
-    return (...args: Parameters<T>) => {
-        clearTimeout(timeoutId);
-        timeoutId = setTimeout(() => func.apply(null, args), delay);
-    };
-}
-
-/**
- * ローカルストレージのヘルパー（設定保存用）
- */
-export const localStorage = {
+export const localStorageHelper = {
     get: (key: string, defaultValue: any = null) => {
         if (typeof window === 'undefined') return defaultValue;
         
@@ -279,8 +252,8 @@ export function calculateGameProgress(gameData: GameData): {
     completionRate: number;
 } {
     const totalColumns = Object.keys(COLUMN_HEIGHTS).length;
-    const completedColumns = Object.keys(gameData.completedColumns).length;
-    const totalMoves = gameData.logs.filter(log => 
+    const completedColumns = Object.keys(gameData.completedColumns || {}).length;
+    const totalMoves = (gameData.logs || []).filter(log => 
         log.message.includes('進行') || log.message.includes('完成')
     ).length;
     

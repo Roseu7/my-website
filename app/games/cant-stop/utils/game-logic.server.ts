@@ -21,6 +21,26 @@ import {
 } from "~/games/cant-stop/utils/helpers";
 
 /**
+ * roomIdからUUIDを取得するヘルパー関数
+ */
+async function getRoomUUID(supabase: any, roomId: string): Promise<string> {
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
+    
+    if (isUUID) {
+        return roomId;
+    }
+    
+    const { data: room, error } = await supabase
+        .from(DB_TABLES.GAME_ROOMS)
+        .select('id')
+        .eq('room_id', roomId.toLowerCase())
+        .single();
+        
+    if (error) throw error;
+    return room.id;
+}
+
+/**
  * サイコロを振る
  */
 export async function rollDice(
@@ -31,11 +51,14 @@ export async function rollDice(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
+        // ルームのUUIDを取得
+        const actualRoomId = await getRoomUUID(supabase, roomId);
+
         // 現在のゲーム状態を取得
         const { data: gameState, error: getError } = await supabase
             .from(DB_TABLES.GAME_STATES)
             .select('*')
-            .eq('room_id', roomId)
+            .eq('room_id', actualRoomId)
             .order('created_at', { ascending: false })
             .limit(1)
             .single();
@@ -89,7 +112,7 @@ export async function rollDice(
 
             // 3秒後に次のターンに移行するためのタイマーを設定
             setTimeout(async () => {
-                await moveToNextTurn(request, roomId, gameState.current_turn_user_id);
+                await moveToNextTurn(request, actualRoomId, gameState.current_turn_user_id);
             }, GAME_SETTINGS.BUST_DELAY_MS);
         }
 
@@ -134,11 +157,14 @@ export async function chooseCombination(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
+        // ルームのUUIDを取得
+        const actualRoomId = await getRoomUUID(supabase, roomId);
+
         // 現在のゲーム状態を取得
         const { data: gameState, error: getError } = await supabase
             .from(DB_TABLES.GAME_STATES)
             .select('*')
-            .eq('room_id', roomId)
+            .eq('room_id', actualRoomId)
             .order('created_at', { ascending: false })
             .limit(1)
             .single();
@@ -154,33 +180,31 @@ export async function chooseCombination(
             return { success: false, error: "組み合わせ選択フェーズではありません" };
         }
 
-        // 選択された組み合わせの妥当性をチェック
+        // 選択された組み合わせが有効かチェック
         const allCombinations = calculateDiceCombinations(gameState.game_data.diceValues);
         const validCombinations = getValidCombinations(allCombinations, gameState.game_data, playerId);
         
-        const isValidChoice = validCombinations.some(combo => 
-            combo.length === combination.length &&
-            combo.every((val, index) => val === combination[index])
+        const isValidChoice = validCombinations.some(validCombo => 
+            validCombo.length === combination.length &&
+            validCombo.every((num, index) => num === combination[index])
         );
 
         if (!isValidChoice) {
-            return { success: false, error: "不正な組み合わせです" };
+            return { success: false, error: "無効な組み合わせです" };
         }
 
-        // ゲームデータを更新
+        // 選択された組み合わせを保存
         const gameData: GameData = {
             ...gameState.game_data,
+            selectedCombination: combination,
             logs: [
                 ...gameState.game_data.logs,
                 { 
-                    message: createGameLogMessage('combination_selected', { combination }), 
+                    message: createGameLogMessage('combination_selected', { combo: combination }), 
                     playerId 
                 }
             ]
         };
-
-        // 組み合わせを一時的に保存（game_dataに追加）
-        gameData.selectedCombination = combination;
 
         // ゲーム状態を更新
         const { error: updateError } = await supabase
@@ -215,11 +239,14 @@ export async function continueGame(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
+        // ルームのUUIDを取得
+        const actualRoomId = await getRoomUUID(supabase, roomId);
+
         // 現在のゲーム状態を取得
         const { data: gameState, error: getError } = await supabase
             .from(DB_TABLES.GAME_STATES)
             .select('*')
-            .eq('room_id', roomId)
+            .eq('room_id', actualRoomId)
             .order('created_at', { ascending: false })
             .limit(1)
             .single();
@@ -294,13 +321,13 @@ export async function continueGame(
             await supabase
                 .from(DB_TABLES.GAME_ROOMS)
                 .update({ status: 'finished' })
-                .eq('id', roomId);
+                .eq('id', actualRoomId);
 
             // 勝利統計を更新
-            await updateWinStats(request, roomId, playerId);
+            await updateWinStats(request, actualRoomId, playerId);
 
             // ゲーム履歴に記録
-            await recordGameHistory(request, roomId, playerId, gameState);
+            await recordGameHistory(request, actualRoomId, playerId, gameState);
         }
 
         // ログを追加
@@ -349,11 +376,14 @@ export async function stopTurn(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
+        // ルームのUUIDを取得
+        const actualRoomId = await getRoomUUID(supabase, roomId);
+
         // 現在のゲーム状態を取得
         const { data: gameState, error: getError } = await supabase
             .from(DB_TABLES.GAME_STATES)
             .select('*')
-            .eq('room_id', roomId)
+            .eq('room_id', actualRoomId)
             .order('created_at', { ascending: false })
             .limit(1)
             .single();
@@ -383,7 +413,7 @@ export async function stopTurn(
         delete gameData.selectedCombination;
 
         // ゲーム状態を更新して次のターンに移行
-        await moveToNextTurn(request, roomId, playerId, gameData);
+        await moveToNextTurn(request, actualRoomId, playerId, gameData);
 
         return { success: true };
     } catch (error) {
@@ -407,7 +437,7 @@ async function moveToNextTurn(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
-        // 参加者一覧を取得
+        // 参加者一覧を取得（参加順）
         const { data: participants, error: participantsError } = await supabase
             .from(DB_TABLES.ROOM_PARTICIPANTS)
             .select('user_id')
@@ -417,14 +447,12 @@ async function moveToNextTurn(
         if (participantsError) throw participantsError;
 
         // 次のプレイヤーを決定
-        const currentIndex = participants.findIndex(p => p.user_id === currentPlayerId);
-        const nextIndex = (currentIndex + 1) % participants.length;
-        const nextPlayerId = participants[nextIndex].user_id;
+        const nextPlayerId = getNextPlayer(currentPlayerId, participants.map(p => p.user_id));
 
         // 現在のゲーム状態を取得（gameDataが渡されていない場合）
-        let finalGameData: GameData;
-        if (!gameData) {
-            const { data: currentGameState, error: getError } = await supabase
+        let currentGameData = gameData;
+        if (!currentGameData) {
+            const { data: gameState, error: getError } = await supabase
                 .from(DB_TABLES.GAME_STATES)
                 .select('*')
                 .eq('room_id', roomId)
@@ -433,70 +461,27 @@ async function moveToNextTurn(
                 .single();
 
             if (getError) throw getError;
-            
-            finalGameData = {
-                ...currentGameState.game_data,
-                // 必須プロパティを明示的に初期化
-                columns: currentGameState.game_data.columns || {},
-                tempMarkers: currentGameState.game_data.tempMarkers || {},
-                completedColumns: currentGameState.game_data.completedColumns || {},
-                diceValues: currentGameState.game_data.diceValues || [],
-                logs: currentGameState.game_data.logs || []
-            };
-        } else {
-            finalGameData = gameData;
+            currentGameData = gameState.game_data;
         }
-
-        // 次のターンのログを追加
-        const updatedGameData: GameData = {
-            ...finalGameData,
-            logs: [
-                ...finalGameData.logs,
-                { message: GAME_MESSAGES.NEXT_TURN }
-            ]
-        };
 
         // ゲーム状態を更新
-        const { data: currentGameState } = await supabase
+        const { error: updateError } = await supabase
             .from(DB_TABLES.GAME_STATES)
-            .select('id')
+            .update({
+                current_turn_user_id: nextPlayerId,
+                turn_number: (gameData ? 1 : 0) + 1, // turn_numberを適切に更新
+                game_data: currentGameData,
+                phase: 'rolling',
+                updated_at: new Date().toISOString()
+            })
             .eq('room_id', roomId)
             .order('created_at', { ascending: false })
-            .limit(1)
-            .single();
+            .limit(1);
 
-        if (currentGameState) {
-            const { error: updateError } = await supabase
-                .from(DB_TABLES.GAME_STATES)
-                .update({
-                    current_turn_user_id: nextPlayerId,
-                    turn_number: await getNextTurnNumber(supabase, roomId),
-                    game_data: updatedGameData,
-                    phase: 'rolling',
-                    updated_at: new Date().toISOString()
-                })
-                .eq('id', currentGameState.id);
-
-            if (updateError) throw updateError;
-        }
+        if (updateError) throw updateError;
     } catch (error) {
-        console.error('次のターン移行エラー:', error);
+        console.error('ターン移行エラー:', error);
     }
-}
-
-/**
- * 次のターン番号を取得
- */
-async function getNextTurnNumber(supabase: any, roomId: string): Promise<number> {
-    const { data: currentGame } = await supabase
-        .from(DB_TABLES.GAME_STATES)
-        .select('turn_number')
-        .eq('room_id', roomId)
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
-
-    return (currentGame?.turn_number || 0) + 1;
 }
 
 /**
@@ -511,7 +496,7 @@ async function updateWinStats(
 
     try {
         // 現在の勝利数を取得
-        const { data: currentStats, error: getError } = await supabase
+        const { data: currentStats } = await supabase
             .from(DB_TABLES.ROOM_WINS)
             .select('wins_count')
             .eq('room_id', roomId)
