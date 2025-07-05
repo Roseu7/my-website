@@ -1,7 +1,6 @@
 import type { LinksFunction, MetaFunction } from "@remix-run/node";
 import {
     Links,
-    LiveReload,
     Meta,
     Outlet,
     Scripts,
@@ -56,9 +55,6 @@ export default function App() {
                 
                 <ScrollRestoration />
                 <Scripts />
-                {process.env.NODE_ENV === "development" && (
-                    <LiveReload />
-                )}
                 
                 <style>{`
                     @keyframes loading {

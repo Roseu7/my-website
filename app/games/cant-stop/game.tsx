@@ -10,7 +10,7 @@ import {
     continueGame, 
     stopTurn 
 } from "~/games/cant-stop/utils/game-logic.server";
-import { createRealtimeClient, formatUserFromAuth } from "~/games/cant-stop/utils/realtime.client";
+import { createRealtimeClient } from "~/games/cant-stop/utils/realtime.client";
 import { Header } from "~/components/Header";
 import { Footer } from "~/components/Footer";
 import { 
@@ -71,6 +71,30 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     }
 
     const gameState = gameStateResult.data;
+
+    // ユーザー情報整形関数（インライン）
+    const formatUserFromAuth = (authUser: User | any): { id: string; username: string; avatar?: string } | null => {
+        if (!authUser) return null;
+        
+        // 既にUser型の場合はそのまま使用
+        if (authUser.username) {
+            return {
+                id: authUser.id,
+                username: authUser.username,
+                avatar: authUser.avatar
+            };
+        }
+        
+        // Supabaseのユーザーオブジェクトの場合
+        const metadata = authUser.user_metadata || authUser.raw_user_meta_data || {};
+        const customClaims = metadata.custom_claims || {};
+        
+        return {
+            id: authUser.id,
+            username: customClaims.global_name || metadata.full_name || metadata.name || metadata.display_name || "User",
+            avatar: metadata.avatar_url || metadata.picture
+        };
+    };
 
     // プレイヤー情報を構築
     const players: Player[] = participants.map((participant: RoomParticipant & { user: User | null }, index: number) => {

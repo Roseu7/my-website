@@ -4,7 +4,6 @@ import { useLoaderData, Form } from "@remix-run/react";
 import { useState } from "react";
 import { getUserFromSession } from "~/utils/supabase-auth.server";
 import { getRoomData } from "~/games/cant-stop/utils/database.server";
-import { formatUserFromAuth } from "~/games/cant-stop/utils/realtime.client";
 import { Header } from "~/components/Header";
 import { Footer } from "~/components/Footer";
 import type { 
@@ -54,6 +53,30 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
         { message: 'コラム11を完成', playerId: participants[1]?.user_id },
         { message: '3つのコラムを完成させて勝利！', playerId: participants[1]?.user_id }
     ];
+
+    // ユーザー情報整形関数（インライン）
+    const formatUserFromAuth = (authUser: User | any): { id: string; username: string; avatar?: string } | null => {
+        if (!authUser) return null;
+        
+        // 既にUser型の場合はそのまま使用
+        if (authUser.username) {
+            return {
+                id: authUser.id,
+                username: authUser.username,
+                avatar: authUser.avatar
+            };
+        }
+        
+        // Supabaseのユーザーオブジェクトの場合
+        const metadata = authUser.user_metadata || authUser.raw_user_meta_data || {};
+        const customClaims = metadata.custom_claims || {};
+        
+        return {
+            id: authUser.id,
+            username: customClaims.global_name || metadata.full_name || metadata.name || metadata.display_name || "User",
+            avatar: metadata.avatar_url || metadata.picture
+        };
+    };
 
     // プレイヤー情報を構築
     const players: Player[] = participants.map((participant: RoomParticipant & { user: User | null }, index: number) => {

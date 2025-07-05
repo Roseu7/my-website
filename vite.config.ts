@@ -25,13 +25,13 @@ export default defineConfig({
                     route("auth/discord", "auth/discord.tsx");
                     
                     // Games routes
-                    route("games", "games/route.tsx", () => {
-                        // Can't Stop game routes
-                        route("cant-stop", "games/cant-stop/route.tsx");
-                        route("cant-stop/lobby/:roomId", "games/cant-stop/lobby.tsx");
-                        route("cant-stop/game/:roomId", "games/cant-stop/game.tsx");
-                        route("cant-stop/result/:roomId", "games/cant-stop/result.tsx");
-                    });
+                    route("games", "games/route.tsx");
+                    
+                    // Can't Stop game routes（独立したルート）
+                    route("games/cant-stop", "games/cant-stop/route.tsx");
+                    route("games/cant-stop/lobby/:roomId", "games/cant-stop/lobby.tsx");
+                    route("games/cant-stop/game/:roomId", "games/cant-stop/game.tsx");
+                    route("games/cant-stop/result/:roomId", "games/cant-stop/result.tsx");
                     
                     // Tools routes
                     route("tools", "tools/route.tsx", () => {

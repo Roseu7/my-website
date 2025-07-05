@@ -45,19 +45,18 @@ export function getDiscordAuthUrl() {
     return `/auth/discord?redirectTo=${encodeURIComponent(redirectTo)}`;
 }
 
-// セッションからユーザー情報を取得
+// セッションからユーザー情報を取得（セキュアな方法）
 export async function getUserFromSession(request: Request): Promise<User | null> {
     const { supabase } = createSupabaseServerClient(request);
     
     try {
-        const { data: { session } } = await supabase.auth.getSession();
+        // セキュリティのためgetUser()を使用（getSession()ではなく）
+        const { data: { user }, error } = await supabase.auth.getUser();
         
-        if (!session?.user) {
+        if (error || !user) {
             return null;
         }
 
-        const user = session.user;
-        
         // Discord情報を取得
         const discordData = user.user_metadata;
         const customClaims = discordData?.custom_claims;
