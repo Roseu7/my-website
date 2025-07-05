@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
-import type { GameLog as GameLogType, Player } from "~/libs/cant-stop/types";
-import { UI_SETTINGS } from "~/utils/cant-stop/constants";
-import { formatGameDuration } from "~/utils/cant-stop/helpers";
+import type { GameLog as GameLogType, Player } from "~//games/cant-stop/utils/types";
+import { UI_SETTINGS } from "~/games/cant-stop/utils/constants";
+import { formatGameDuration } from "~/games/cant-stop/utils/helpers";
 
 interface GameLogProps {
     logs: GameLogType[];

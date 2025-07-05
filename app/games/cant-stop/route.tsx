@@ -1,12 +1,12 @@
 import type { LoaderFunctionArgs, ActionFunctionArgs } from "@remix-run/node";
 import { json, redirect } from "@remix-run/node";
-import { useLoaderData, Form, useActionData, useNavigation } from "@remix-run/react";
+import { useLoaderData, Form, useActionData, useNavigation, Link } from "@remix-run/react";
 import { getUserFromSession } from "~/utils/supabase-auth.server";
-import { joinOrCreateRoom } from "~/libs/cant-stop/database.server";
+import { joinOrCreateRoom } from "~/games/cant-stop/utils/database.server";
 import { Header } from "~/components/Header";
 import { Footer } from "~/components/Footer";
 import { useState } from "react";
-import { ROOM_ID_SETTINGS, ERROR_MESSAGES } from "~/utils/cant-stop/constants";
+import { ROOM_ID_SETTINGS, ERROR_MESSAGES } from "~/games/cant-stop/utils/constants";
 
 export async function loader({ request }: LoaderFunctionArgs) {
     const user = await getUserFromSession(request);
@@ -49,7 +49,7 @@ export async function action({ request }: ActionFunctionArgs) {
     }
 
     // 成功した場合はロビー画面にリダイレクト
-    return redirect(`/games/cant-stop/lobby/${result.data?.id}`);
+    return redirect(`/games/cant-stop/lobby/${result.data?.id || roomId}`);
 }
 
 export default function CantStop() {
@@ -76,6 +76,15 @@ export default function CantStop() {
                         </p>
                     </div>
 
+                    {/* エラーメッセージ */}
+                    {actionData?.error && (
+                        <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg">
+                            <p className="text-red-700 text-sm">
+                                {typeof actionData.error === 'string' ? actionData.error : 'エラーが発生しました'}
+                            </p>
+                        </div>
+                    )}
+
                     {/* ルームID入力フォーム */}
                     <Form method="post" className="space-y-6">
                         <div>
@@ -88,61 +97,52 @@ export default function CantStop() {
                                 name="roomId"
                                 value={roomId}
                                 onChange={(e) => setRoomId(e.target.value)}
-                                placeholder="例: game123"
-                                disabled={isSubmitting}
-                                className="w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-50"
-                                minLength={ROOM_ID_SETTINGS.MIN_LENGTH}
-                                maxLength={ROOM_ID_SETTINGS.MAX_LENGTH}
-                                pattern="[a-zA-Z0-9]+"
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 transition-colors"
+                                placeholder="例: room123"
                                 required
+                                disabled={isSubmitting}
                             />
                             <p className="mt-1 text-xs text-gray-500">
-                                3-20文字の半角英数字で入力してください
+                                {ROOM_ID_SETTINGS.MIN_LENGTH}-{ROOM_ID_SETTINGS.MAX_LENGTH}文字、英数字のみ
                             </p>
                         </div>
 
-                        {/* エラー表示 */}
-                        {actionData?.error && (
-                            <div className="bg-red-50 border border-red-200 rounded-md p-3">
-                                <p className="text-sm text-red-600">
-                                    {typeof actionData.error === 'string' 
-                                        ? actionData.error 
-                                        : 'エラーが発生しました'}
-                                </p>
-                            </div>
-                        )}
-
-                        {/* 送信ボタン */}
                         <button
                             type="submit"
                             disabled={isSubmitting || !roomId.trim()}
-                            className="w-full bg-indigo-600 text-white py-2 px-4 rounded-md hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                            className="w-full bg-gradient-to-r from-blue-500 to-indigo-600 text-white font-semibold py-3 px-4 rounded-lg hover:shadow-md transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             {isSubmitting ? (
-                                <span className="flex items-center justify-center">
-                                    <svg className="animate-spin -ml-1 mr-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                                    </svg>
-                                    参加中...
-                                </span>
+                                <div className="flex items-center justify-center space-x-2">
+                                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin"></div>
+                                    <span>参加中...</span>
+                                </div>
                             ) : (
-                                'ルームに参加'
+                                "ルームに参加"
                             )}
                         </button>
                     </Form>
 
                     {/* ゲーム説明 */}
-                    <div className="mt-8 pt-6 border-t border-gray-200">
-                        <h3 className="text-sm font-medium text-gray-900 mb-2">
-                            ゲームについて
+                    <div className="mt-8 p-4 bg-blue-50 border border-blue-200 rounded-lg">
+                        <h3 className="text-sm font-semibold text-blue-900 mb-2">
+                            ゲームルール
                         </h3>
-                        <ul className="text-xs text-gray-600 space-y-1">
-                            <li>• 2-4人でプレイ可能</li>
-                            <li>• 3つのコラムを完成させると勝利</li>
-                            <li>• サイコロを振って進路を選択</li>
-                            <li>• リスクを取るか安全策を取るかが鍵</li>
+                        <ul className="text-sm text-blue-800 space-y-1">
+                            <li>• 4つのサイコロを振って進む</li>
+                            <li>• 3つのコラムを完成させて勝利</li>
+                            <li>• リスクとリターンを考えて戦略を立てよう</li>
                         </ul>
+                    </div>
+
+                    {/* 戻るリンク */}
+                    <div className="mt-6 text-center">
+                        <Link
+                            to="/games"
+                            className="text-indigo-600 hover:text-indigo-800 text-sm font-medium transition-colors"
+                        >
+                            ← ゲーム一覧に戻る
+                        </Link>
                     </div>
                 </div>
             </main>

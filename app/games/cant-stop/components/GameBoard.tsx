@@ -1,7 +1,7 @@
 import { useState } from "react";
-import type { GameData, Player } from "~/libs/cant-stop/types";
-import { COLUMN_HEIGHTS } from "~/utils/cant-stop/constants";
-import { getPlayerProgress, calculateColumnOffset } from "~/utils/cant-stop/helpers";
+import type { GameData, Player } from "~/games/cant-stop/utils/types";
+import { COLUMN_HEIGHTS } from "~/games/cant-stop/utils/constants";
+import { getPlayerProgress, calculateColumnOffset } from "~/games/cant-stop/utils/helpers";
 
 interface GameBoardProps {
     gameData: GameData;

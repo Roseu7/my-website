@@ -1,6 +1,6 @@
 // Can't Stop ゲーム用のヘルパー関数
 
-import type { GameData, Player } from "~/libs/cant-stop/types";
+import type { GameData, Player } from "~/games/cant-stop/utils/types";
 import { COLUMN_HEIGHTS, GAME_SETTINGS } from "./constants";
 
 /**

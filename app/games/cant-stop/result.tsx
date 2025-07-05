@@ -3,8 +3,8 @@ import { json, redirect } from "@remix-run/node";
 import { useLoaderData, Form } from "@remix-run/react";
 import { useState } from "react";
 import { getUserFromSession } from "~/utils/supabase-auth.server";
-import { getRoomData } from "~/libs/cant-stop/database.server";
-import { formatUserFromAuth } from "~/libs/cant-stop/realtime.client";
+import { getRoomData } from "~/games/cant-stop/utils/database.server";
+import { formatUserFromAuth } from "~/games/cant-stop/utils/realtime.client";
 import { Header } from "~/components/Header";
 import { Footer } from "~/components/Footer";
 import type { 
@@ -15,8 +15,8 @@ import type {
     RoomWins,
     User,
     GameLog
-} from "~/libs/cant-stop/types";
-import { getPlayerColor } from "~/utils/cant-stop/constants";
+} from "~/games/cant-stop/utils/types";
+import { getPlayerColor } from "~/games/cant-stop/utils/constants";
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
     const user = await getUserFromSession(request);

@@ -9,13 +9,13 @@ import {
     kickPlayer, 
     toggleReady, 
     startGame 
-} from "~/libs/cant-stop/database.server";
-import { createRealtimeClient, formatUserFromAuth } from "~/libs/cant-stop/realtime.client";
+} from "~/games/cant-stop/utils/database.server";
+import { createRealtimeClient, formatUserFromAuth } from "~/games/cant-stop/utils/realtime.client";
 import { Header } from "~/components/Header";
 import { Footer } from "~/components/Footer";
-import { PlayerList, ConnectionStatus } from "~/components/cant-stop";
-import type { LobbyState, RoomParticipant, User, GameRoom, RoomWins } from "~/libs/cant-stop/types";
-import { getPlayerColor } from "~/utils/cant-stop/constants";
+import { PlayerList, ConnectionStatus } from "~/games/cant-stop/components";
+import type { LobbyState, RoomParticipant, User, GameRoom, RoomWins } from "~/games/cant-stop/utils/types";
+import { getPlayerColor } from "~/games/cant-stop/utils/constants";
 
 // 接続状態の型定義
 interface ConnectionState {

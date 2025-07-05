@@ -1,6 +1,6 @@
 import { getSupabaseBrowserClient } from "~/libs/supabase.client";
 import type { RealtimeEvent, SupabaseUser } from "./types";
-import { REALTIME_CHANNELS } from "~/utils/cant-stop/constants";
+import { REALTIME_CHANNELS } from "~/games/cant-stop/utils/constants";
 
 /**
  * 接続状態の管理

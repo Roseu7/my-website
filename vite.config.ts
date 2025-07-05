@@ -13,6 +13,40 @@ export default defineConfig({
                 v3_singleFetch: true,
                 v3_lazyRouteDiscovery: true,
             },
+            routes(defineRoutes) {
+                return defineRoutes((route) => {
+                    // Home page
+                    route("/", "home/route.tsx", { index: true });
+                    
+                    // Authentication routes
+                    route("login", "auth/login.tsx");
+                    route("logout", "auth/logout.tsx");
+                    route("auth/callback", "auth/callback.tsx");
+                    route("auth/discord", "auth/discord.tsx");
+                    
+                    // Games routes
+                    route("games", "games/route.tsx", () => {
+                        // Can't Stop game routes
+                        route("cant-stop", "games/cant-stop/route.tsx");
+                        route("cant-stop/lobby/:roomId", "games/cant-stop/lobby.tsx");
+                        route("cant-stop/game/:roomId", "games/cant-stop/game.tsx");
+                        route("cant-stop/result/:roomId", "games/cant-stop/result.tsx");
+                    });
+                    
+                    // Tools routes
+                    route("tools", "tools/route.tsx", () => {
+                        // Add tool routes here as they are created
+                        // route("tool-name", "tools/tool-name/route.tsx");
+                    });
+                    
+                    // User profile routes
+                    route("profile", "profile/route.tsx", () => {
+                    });
+                    
+                    // 404 catch-all route
+                    route("*", "404/route.tsx");
+                });
+            },
         }),
         tsconfigPaths(),
     ],

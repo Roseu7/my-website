@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Form } from "@remix-run/react";
-import { calculateDiceCombinations } from "~/utils/cant-stop/helpers";
+import { calculateDiceCombinations } from "~/games/cant-stop/utils/helpers";
 
 interface DiceRollerProps {
     diceValues: number[];

@@ -3,14 +3,14 @@ import { json, redirect } from "@remix-run/node";
 import { useLoaderData, useActionData, Form, useNavigation } from "@remix-run/react";
 import { useState, useEffect } from "react";
 import { getUserFromSession } from "~/utils/supabase-auth.server";
-import { getRoomData, getGameState } from "~/libs/cant-stop/database.server";
+import { getRoomData, getGameState } from "~/games/cant-stop/utils/database.server";
 import { 
     rollDice, 
     chooseCombination, 
     continueGame, 
     stopTurn 
-} from "~/libs/cant-stop/game-logic.server";
-import { createRealtimeClient, formatUserFromAuth } from "~/libs/cant-stop/realtime.client";
+} from "~/games/cant-stop/utils/game-logic.server";
+import { createRealtimeClient, formatUserFromAuth } from "~/games/cant-stop/utils/realtime.client";
 import { Header } from "~/components/Header";
 import { Footer } from "~/components/Footer";
 import { 
@@ -18,7 +18,7 @@ import {
     DiceRoller, 
     PlayerList, 
     GameLog 
-} from "~/components/cant-stop";
+} from "~/games/cant-stop/components";
 import type { 
     ClientGameState, 
     Player, 
@@ -26,13 +26,13 @@ import type {
     GameData,
     RoomParticipant,
     User 
-} from "~/libs/cant-stop/types";
+} from "~/games/cant-stop/utils/types";
 import { 
     getPlayerColor, 
     COLUMN_HEIGHTS, 
     GAME_SETTINGS 
-} from "~/utils/cant-stop/constants";
-import { getValidCombinations, calculateDiceCombinations } from "~/utils/cant-stop/helpers";
+} from "~/games/cant-stop/utils/constants";
+import { getValidCombinations, calculateDiceCombinations } from "~/games/cant-stop/utils/helpers";
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
     const user = await getUserFromSession(request);

@@ -1,6 +1,6 @@
 import { Form } from "@remix-run/react";
-import type { Player, RoomParticipant, User, RoomWins } from "~/libs/cant-stop/types";
-import { formatPlayerName } from "~/utils/cant-stop/helpers";
+import type { Player, RoomParticipant, User, RoomWins } from "~/games/cant-stop/utils/types";
+import { formatPlayerName } from "~/games/cant-stop/utils/helpers";
 
 interface PlayerListProps {
     players: Player[];

@@ -13,7 +13,7 @@ import {
     ERROR_MESSAGES, 
     GAME_SETTINGS,
     GAME_MESSAGES 
-} from "~/utils/cant-stop/constants";
+} from "~/games/cant-stop/utils/constants";
 
 /**
  * ルームを作成または参加

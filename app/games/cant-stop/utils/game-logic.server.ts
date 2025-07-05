@@ -10,7 +10,7 @@ import {
     GAME_MESSAGES, 
     GAME_SETTINGS,
     COLUMN_HEIGHTS 
-} from "~/utils/cant-stop/constants";
+} from "~/games/cant-stop/utils/constants";
 import { 
     calculateDiceCombinations, 
     getValidCombinations,
@@ -18,7 +18,7 @@ import {
     checkPlayerVictory,
     getNextPlayer,
     createGameLogMessage
-} from "~/utils/cant-stop/helpers";
+} from "~/games/cant-stop/utils/helpers";
 
 /**
  * サイコロを振る

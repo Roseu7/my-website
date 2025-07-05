@@ -14,4 +14,4 @@ export type {
     RoomParticipant,
     User,
     RoomWins
-} from '~/libs/cant-stop/types';
+} from '~/games/cant-stop/utils/types';

@@ -1,6 +1,6 @@
 // Can't Stop ゲーム用の定数
 
-import type { PlayerColor } from "~/libs/cant-stop/types";
+import type { PlayerColor } from "~/games/cant-stop/utils/types";
 
 // コラムの高さ設定（コラム番号: 必要段数）
 export const COLUMN_HEIGHTS: { [key: number]: number } = {
