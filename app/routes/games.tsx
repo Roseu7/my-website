@@ -14,6 +14,18 @@ export async function loader({ request }: LoaderFunctionArgs) {
 export default function Games() {
     const { user } = useLoaderData<typeof loader>();
 
+    const games = [
+        {
+            id: 'cant-stop',
+            title: "Can't Stop",
+            description: "4つのサイコロを使ったリスクマネジメントゲーム。3つのコラムを完成させて勝利を目指そう！",
+            difficulty: "中級",
+            players: "2-4人",
+            time: "10-20分",
+            color: "from-blue-500 to-indigo-600"
+        }
+    ];
+
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
             <Header user={user} />
@@ -25,31 +37,77 @@ export default function Games() {
                         ゲーム
                     </h1>
                     <p className="text-lg text-gray-600">
-                        楽しいゲームコンテンツを用意予定です
+                        楽しいゲームで遊んでみましょう！
                     </p>
                 </div>
 
-                {/* まだない表示 */}
-                <div className="text-center">
+                {/* ゲーム一覧 */}
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                    {games.map((game) => (
+                        <div
+                            key={game.id}
+                            className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 overflow-hidden hover:shadow-lg transition-all duration-300 hover:scale-105"
+                        >
+                            {/* ゲームヘッダー */}
+                            <div className={`bg-gradient-to-r ${game.color} p-6 text-white`}>
+                                <h3 className="text-2xl font-bold mb-2">{game.title}</h3>
+                                <div className="flex items-center space-x-4 text-sm opacity-90">
+                                    <span className="flex items-center space-x-1">
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+                                        </svg>
+                                        <span>{game.players}</span>
+                                    </span>
+                                    <span className="flex items-center space-x-1">
+                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                        </svg>
+                                        <span>{game.time}</span>
+                                    </span>
+                                </div>
+                            </div>
+
+                            {/* ゲーム詳細 */}
+                            <div className="p-6">
+                                <p className="text-gray-600 mb-4 leading-relaxed">
+                                    {game.description}
+                                </p>
+                                
+                                <div className="flex items-center justify-between mb-6">
+                                    <span className="inline-flex items-center px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-800">
+                                        難易度: {game.difficulty}
+                                    </span>
+                                </div>
+
+                                <Link
+                                    to={`/games/${game.id}`}
+                                    className={`w-full inline-flex items-center justify-center px-6 py-3 bg-gradient-to-r ${game.color} text-white font-semibold rounded-lg hover:shadow-md transition-all duration-200 hover:scale-105`}
+                                >
+                                    <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.828 14.828a4 4 0 01-5.656 0M9 10h1m4 0h1m-6 4h8m-9-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                    </svg>
+                                    プレイする
+                                </Link>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* 今後追加予定 */}
+                <div className="mt-16 text-center">
                     <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-12 max-w-2xl mx-auto">
-                        <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                            <svg className="w-12 h-12 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M14.25 6.087c0-.355.186-.676.401-.959.221-.29.349-.634.349-1.003 0-1.036-1.007-1.875-2.25-1.875s-2.25.84-2.25 1.875c0 .369.128.713.349 1.003.215.283.401.604.401.959v0a.64.64 0 01-.657.643 48.39 48.39 0 01-4.163-.3c.186 1.613.293 3.25.315 4.907a.656.656 0 01-.658.663v0c-.355 0-.676-.186-.959-.401a1.647 1.647 0 00-1.003-.349c-1.036 0-1.875 1.007-1.875 2.25s.84 2.25 1.875 2.25c.369 0 .713-.128 1.003-.349.283-.215.604-.401.959-.401v0c.31 0 .555.26.532.57a48.039 48.039 0 01-.642 5.056c1.518.19 3.058.309 4.616.354a.64.64 0 00.657-.643v0c0-.355-.186-.676-.401-.959a1.647 1.647 0 01-.349-1.003c0-1.035 1.008-1.875 2.25-1.875 1.243 0 2.25.84 2.25 1.875 0 .369-.128.713-.349 1.003-.215.283-.4.604-.4.959v0c0 .333.277.599.61.58a48.1 48.1 0 005.427-.63 48.05 48.05 0 00.582-4.717.532.532 0 00-.533-.57v0c-.355 0-.676.186-.959.401-.29.221-.634.349-1.003.349-1.035 0-1.875-1.007-1.875-2.25s.84-2.25 1.875-2.25c.37 0 .713.128 1.003.349.283.215.604.401.959.401v0a.656.656 0 00.658-.663 48.422 48.422 0 00-.37-5.36c-1.886.342-3.81.574-5.766.689a.578.578 0 01-.61-.58v0z" />
+                        <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-6">
+                            <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
                             </svg>
                         </div>
-                        <h2 className="text-2xl font-semibold text-gray-900 mb-4">
-                            ゲームはまだありません
+                        <h2 className="text-xl font-semibold text-gray-900 mb-4">
+                            さらなるゲームを追加予定
                         </h2>
-                        <p className="text-gray-600 mb-6">
-                            現在ゲームコンテンツを準備中です。<br />
-                            近日中に楽しいゲームを追加予定です！
+                        <p className="text-gray-600">
+                            今後も楽しいゲームを追加していく予定です。<br />
+                            ぜひまたお立ち寄りください！
                         </p>
-                        <div className="flex items-center justify-center space-x-2 text-sm text-gray-500">
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                            </svg>
-                            <span>準備中...</span>
-                        </div>
                     </div>
                 </div>
             </main>
