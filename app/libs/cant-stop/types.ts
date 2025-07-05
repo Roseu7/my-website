@@ -4,6 +4,8 @@ export interface User {
     id: string;
     username: string;
     avatar?: string;
+    email?: string;
+    raw_user_meta_data?: any;
 }
 
 export interface GameRoom {
@@ -63,13 +65,13 @@ export interface GameHistory {
     id: string;
     room_id: string;
     winner_user_id: string;
-    participants: string[];
+    participants: string[]; // JSON配列としてデータベースに保存
     game_duration_seconds: number;
     completed_at: string;
 }
 
-// ゲームフェーズ
-export type GamePhase = 'rolling' | 'choosing' | 'deciding' | 'busting';
+// ゲームフェーズ（データベーススキーマに対応）
+export type GamePhase = 'rolling' | 'choosing' | 'deciding' | 'stopped' | 'busting';
 
 // プレイヤー情報（ゲーム中）
 export interface Player {
@@ -144,3 +146,17 @@ export interface DatabaseSuccess<T = any> {
 }
 
 export type DatabaseResult<T = any> = DatabaseSuccess<T> | DatabaseError;
+
+// Supabase特有の型
+export interface SupabaseUser {
+    id: string;
+    email?: string;
+    user_metadata?: {
+        full_name?: string;
+        name?: string;
+        avatar_url?: string;
+        custom_claims?: {
+            global_name?: string;
+        };
+    };
+}

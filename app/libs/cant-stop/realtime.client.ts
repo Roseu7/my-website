@@ -1,5 +1,5 @@
 import { getSupabaseBrowserClient } from "~/libs/supabase.client";
-import type { RealtimeEvent } from "./types";
+import type { RealtimeEvent, SupabaseUser } from "./types";
 import { REALTIME_CHANNELS } from "~/utils/cant-stop/constants";
 
 /**
@@ -49,10 +49,8 @@ export class CantStopRealtimeClient {
      */
     private handleVisibilityChange() {
         if (document.hidden) {
-            // ページが非表示になった場合の処理
             console.log('ページが非表示になりました');
         } else {
-            // ページが表示された場合の処理
             console.log('ページが表示されました');
             this.checkAndReconnect();
         }
@@ -95,13 +93,7 @@ export class CantStopRealtimeClient {
         this.notifyConnectionStateChange(callbacks.onConnectionStateChanged);
 
         const channelName = `${REALTIME_CHANNELS.ROOM_PREFIX}${this.roomId}`;
-        this.roomChannel = this.supabase.channel(channelName, {
-            config: {
-                presence: {
-                    key: this.roomId
-                }
-            }
-        });
+        this.roomChannel = this.supabase.channel(channelName);
 
         // 参加者の変更を監視
         this.roomChannel
@@ -120,10 +112,7 @@ export class CantStopRealtimeClient {
                             // 最新の参加者一覧を取得
                             const { data } = await this.supabase
                                 .from('room_participants')
-                                .select(`
-                                    *,
-                                    user:auth.users(id, email, raw_user_meta_data)
-                                `)
+                                .select('*')
                                 .eq('room_id', this.roomId);
                             
                             callbacks.onParticipantChanged(data || []);
@@ -302,7 +291,7 @@ export class CantStopRealtimeClient {
         }
 
         this.reconnectAttempts++;
-        const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000); // 最大30秒
+        const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
 
         console.log(`${channelType}チャンネルを${delay}ms後に再接続試行 (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
@@ -327,14 +316,6 @@ export class CantStopRealtimeClient {
         
         console.log('ルームチャンネル再接続中...');
         this.unsubscribeFromRoom();
-        
-        // 少し待ってから再接続
-        setTimeout(() => {
-            if (!this.isDestroyed) {
-                // 既存のコールバックを使って再購読
-                // 注意: 実際の実装では、コールバックを保存しておく必要があります
-            }
-        }, 1000);
     }
 
     /**
@@ -345,14 +326,6 @@ export class CantStopRealtimeClient {
         
         console.log('ゲームチャンネル再接続中...');
         this.unsubscribeFromGame();
-        
-        // 少し待ってから再接続
-        setTimeout(() => {
-            if (!this.isDestroyed) {
-                // 既存のコールバックを使って再購読
-                // 注意: 実際の実装では、コールバックを保存しておく必要があります
-            }
-        }, 1000);
     }
 
     /**
@@ -360,70 +333,34 @@ export class CantStopRealtimeClient {
      */
     private notifyConnectionStateChange(callback?: (state: ConnectionState) => void) {
         if (callback) {
-            callback({ ...this.connectionState });
+            callback(this.connectionState);
         }
     }
 
     /**
-     * カスタムイベントを送信（プレイヤー間通信）
-     */
-    async sendCustomEvent(event: RealtimeEvent) {
-        if (!this.roomChannel || this.connectionState.room !== 'connected') {
-            console.warn('ルームチャンネルが接続されていません');
-            return false;
-        }
-
-        try {
-            await this.roomChannel.send({
-                type: 'broadcast',
-                event: 'custom_event',
-                payload: event
-            });
-            return true;
-        } catch (error) {
-            console.error('カスタムイベント送信エラー:', error);
-            return false;
-        }
-    }
-
-    /**
-     * カスタムイベントを受信
-     */
-    onCustomEvent(callback: (event: RealtimeEvent) => void) {
-        if (!this.roomChannel) {
-            console.warn('ルームチャンネルが接続されていません');
-            return;
-        }
-
-        this.roomChannel.on('broadcast', { event: 'custom_event' }, (payload: any) => {
-            callback(payload.payload);
-        });
-    }
-
-    /**
-     * ルーム購読を解除
+     * ルーム購読の解除
      */
     unsubscribeFromRoom() {
         if (this.roomChannel) {
-            this.supabase.removeChannel(this.roomChannel);
+            this.roomChannel.unsubscribe();
             this.roomChannel = null;
             this.connectionState.room = 'disconnected';
         }
     }
 
     /**
-     * ゲーム購読を解除
+     * ゲーム購読の解除
      */
     unsubscribeFromGame() {
         if (this.gameChannel) {
-            this.supabase.removeChannel(this.gameChannel);
+            this.gameChannel.unsubscribe();
             this.gameChannel = null;
             this.connectionState.game = 'disconnected';
         }
     }
 
     /**
-     * すべての購読を解除
+     * 全購読の解除
      */
     unsubscribeAll() {
         this.unsubscribeFromRoom();
@@ -431,22 +368,23 @@ export class CantStopRealtimeClient {
     }
 
     /**
-     * クリーンアップ処理
+     * クリーンアップ
      */
     cleanup() {
         this.isDestroyed = true;
         
-        // 再接続タイマーをクリア
+        // タイムアウトをクリア
         this.reconnectTimeouts.forEach(timeoutId => clearTimeout(timeoutId));
         this.reconnectTimeouts = [];
         
-        // すべての購読を解除
+        // 購読を解除
         this.unsubscribeAll();
         
         // イベントリスナーを削除
         if (typeof document !== 'undefined') {
             document.removeEventListener('visibilitychange', this.handleVisibilityChange.bind(this));
         }
+        
         if (typeof window !== 'undefined') {
             window.removeEventListener('beforeunload', this.cleanup.bind(this));
         }
@@ -486,15 +424,15 @@ export function createRealtimeClient(roomId: string): CantStopRealtimeClient {
 /**
  * ユーザー情報を整形するヘルパー関数
  */
-export function formatUserFromAuth(authUser: any) {
+export function formatUserFromAuth(authUser: SupabaseUser | any): { id: string; username: string; avatar?: string } | null {
     if (!authUser) return null;
     
-    const metadata = authUser.raw_user_meta_data || {};
+    const metadata = authUser.raw_user_meta_data || authUser.user_metadata || {};
     const customClaims = metadata.custom_claims || {};
     
     return {
         id: authUser.id,
-        username: customClaims.global_name || metadata.full_name || metadata.name || "User",
-        avatar: metadata.avatar_url
+        username: customClaims.global_name || metadata.full_name || metadata.name || metadata.display_name || "User",
+        avatar: metadata.avatar_url || metadata.picture
     };
 }

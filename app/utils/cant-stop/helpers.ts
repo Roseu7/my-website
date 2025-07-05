@@ -17,35 +17,40 @@ export function validateRoomId(roomId: string): {
     isValid: boolean;
     error?: string;
 } {
-    if (!roomId || roomId.trim().length === 0) {
-        return { isValid: false, error: "ルームIDが入力されていません" };
-    }
-
     const trimmed = roomId.trim();
     
-    if (trimmed.length < 3 || trimmed.length > 20) {
-        return { isValid: false, error: "ルームIDは3文字以上20文字以下で入力してください" };
+    if (trimmed.length === 0) {
+        return { isValid: false, error: "ルームIDを入力してください" };
     }
-
+    
+    if (trimmed.length < 3) {
+        return { isValid: false, error: "ルームIDは3文字以上で入力してください" };
+    }
+    
+    if (trimmed.length > 20) {
+        return { isValid: false, error: "ルームIDは20文字以下で入力してください" };
+    }
+    
     if (!/^[a-zA-Z0-9]+$/.test(trimmed)) {
         return { isValid: false, error: "ルームIDは半角英数字のみで入力してください" };
     }
-
+    
     return { isValid: true };
 }
 
 /**
- * サイコロの組み合わせを計算
+ * サイコロの全組み合わせを計算
  */
-export function calculateDiceCombinations(dice: number[]): number[][] {
-    if (dice.length !== 4) {
-        throw new Error("サイコロは4つ必要です");
-    }
-
+export function calculateDiceCombinations(diceValues: number[]): number[][] {
+    if (diceValues.length !== 4) return [];
+    
+    const [d1, d2, d3, d4] = diceValues;
+    
+    // 3つの可能な組み合わせ
     return [
-        [dice[0] + dice[1], dice[2] + dice[3]],
-        [dice[0] + dice[2], dice[1] + dice[3]],
-        [dice[0] + dice[3], dice[1] + dice[2]]
+        [d1 + d2, d3 + d4].sort((a, b) => a - b),
+        [d1 + d3, d2 + d4].sort((a, b) => a - b),
+        [d1 + d4, d2 + d3].sort((a, b) => a - b)
     ];
 }
 
@@ -53,63 +58,66 @@ export function calculateDiceCombinations(dice: number[]): number[][] {
  * 進行可能な組み合わせをフィルタリング
  */
 export function getValidCombinations(
-    combinations: number[][],
+    allCombinations: number[][],
     gameData: GameData,
-    currentPlayerId: string
+    playerId: string
 ): number[][] {
-    return combinations.filter(combo => 
-        combo.every(sum => {
-            // 完成済みコラムは進行不可
-            if (gameData.completedColumns[sum]) {
-                return false;
-            }
-
-            // 3つまでの一時マーカー制限をチェック
-            const tempMarkerCount = Object.keys(gameData.tempMarkers).length;
-            const hasCurrentMarker = gameData.tempMarkers[sum] === currentPlayerId;
-            
-            if (tempMarkerCount >= GAME_SETTINGS.MAX_TEMP_MARKERS && !hasCurrentMarker) {
-                return false;
-            }
-
-            return true;
-        })
-    );
+    return allCombinations.filter(combination => {
+        // 一時マーカーが3つ使用されている場合、既に一時マーカーがあるコラムのみ
+        const tempMarkerCount = Object.keys(gameData.tempMarkers || {}).length;
+        
+        if (tempMarkerCount >= GAME_SETTINGS.MAX_TEMP_MARKERS) {
+            return combination.every(column => 
+                gameData.tempMarkers?.[column] === playerId
+            );
+        }
+        
+        // 完成したコラムは使用不可
+        return combination.every(column => 
+            !gameData.completedColumns?.[column]
+        );
+    });
 }
 
 /**
  * コラムが完成しているかチェック
  */
 export function isColumnCompleted(column: number, progress: number): boolean {
-    const requiredSteps = COLUMN_HEIGHTS[column];
-    return progress >= requiredSteps;
+    const requiredHeight = COLUMN_HEIGHTS[column];
+    return progress >= requiredHeight;
 }
 
 /**
- * プレイヤーが勝利したかチェック
+ * プレイヤーの勝利条件をチェック
  */
 export function checkPlayerVictory(playerId: string, gameData: GameData): boolean {
-    const completedByPlayer = Object.values(gameData.completedColumns)
-        .filter(winnerId => winnerId === playerId).length;
+    const completedCount = Object.values(gameData.completedColumns)
+        .filter(completerId => completerId === playerId)
+        .length;
     
-    return completedByPlayer >= GAME_SETTINGS.WINNING_COLUMNS;
+    return completedCount >= GAME_SETTINGS.WINNING_COLUMNS;
 }
 
 /**
- * ゲーム状態から次のターンプレイヤーを決定
+ * 次のプレイヤーを取得
  */
-export function getNextPlayer(playerIds: string[], currentPlayerId: string): string {
-    const currentIndex = playerIds.findIndex(id => id === currentPlayerId);
-    const nextIndex = (currentIndex + 1) % playerIds.length;
-    return playerIds[nextIndex];
+export function getNextPlayer(
+    currentPlayerId: string,
+    players: Player[]
+): Player | null {
+    const currentIndex = players.findIndex(p => p.id === currentPlayerId);
+    if (currentIndex === -1) return null;
+    
+    const nextIndex = (currentIndex + 1) % players.length;
+    return players[nextIndex];
 }
 
 /**
- * プレイヤーの進行状況を計算
+ * プレイヤーの進行状況を取得
  */
 export function getPlayerProgress(
-    playerId: string, 
-    column: number, 
+    column: number,
+    playerId: string,
     gameData: GameData
 ): {
     permanentProgress: number;
@@ -234,17 +242,74 @@ export const localStorage = {
         try {
             window.localStorage.setItem(key, JSON.stringify(value));
         } catch (error) {
-            console.warn('ローカルストレージへの保存に失敗しました:', error);
+            console.error('LocalStorage設定エラー:', error);
         }
     },
     
     remove: (key: string) => {
         if (typeof window === 'undefined') return;
-        
-        try {
-            window.localStorage.removeItem(key);
-        } catch (error) {
-            console.warn('ローカルストレージからの削除に失敗しました:', error);
-        }
+        window.localStorage.removeItem(key);
     }
 };
+
+/**
+ * プレイヤー名の表示用フォーマット
+ */
+export function formatPlayerName(player: Player, maxLength: number = 12): string {
+    if (player.username.length <= maxLength) {
+        return player.username;
+    }
+    
+    return player.username.slice(0, maxLength - 3) + '...';
+}
+
+/**
+ * コラム番号から表示用ラベルを生成
+ */
+export function getColumnLabel(column: number): string {
+    return column.toString();
+}
+
+/**
+ * ゲーム進行率を計算（統計表示用）
+ */
+export function calculateGameProgress(gameData: GameData): {
+    totalMoves: number;
+    averageProgressPerColumn: number;
+    completionRate: number;
+} {
+    const totalColumns = Object.keys(COLUMN_HEIGHTS).length;
+    const completedColumns = Object.keys(gameData.completedColumns).length;
+    const totalMoves = gameData.logs.filter(log => 
+        log.message.includes('進行') || log.message.includes('完成')
+    ).length;
+    
+    let totalProgress = 0;
+    Object.keys(COLUMN_HEIGHTS).forEach(col => {
+        const column = parseInt(col);
+        const maxHeight = COLUMN_HEIGHTS[column];
+        const playerProgresses = Object.values(gameData.columns[column] || {});
+        const maxProgress = Math.max(0, ...playerProgresses);
+        totalProgress += Math.min(maxProgress, maxHeight) / maxHeight;
+    });
+    
+    return {
+        totalMoves,
+        averageProgressPerColumn: totalProgress / totalColumns,
+        completionRate: completedColumns / totalColumns
+    };
+}
+
+/**
+ * ランダムなルームIDを生成
+ */
+export function generateRandomRoomId(length: number = 8): string {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    let result = '';
+    
+    for (let i = 0; i < length; i++) {
+        result += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    
+    return result;
+}

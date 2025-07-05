@@ -240,7 +240,15 @@ export async function continueGame(
             return { success: false, error: "選択された組み合わせがありません" };
         }
 
-        const gameData: GameData = { ...gameState.game_data };
+        const gameData: GameData = { 
+            ...gameState.game_data,
+            // 必須プロパティを明示的に初期化
+            columns: gameState.game_data.columns || {},
+            tempMarkers: gameState.game_data.tempMarkers || {},
+            completedColumns: gameState.game_data.completedColumns || {},
+            diceValues: gameState.game_data.diceValues || [],
+            logs: gameState.game_data.logs || []
+        };
         const newLogs: GameLog[] = [];
 
         // 各コラムに対して進行処理
@@ -360,9 +368,13 @@ export async function stopTurn(
         // 一時マーカーをクリア
         const gameData: GameData = {
             ...gameState.game_data,
+            // 必須プロパティを明示的に初期化
+            columns: gameState.game_data.columns || {},
             tempMarkers: {},
+            completedColumns: gameState.game_data.completedColumns || {},
+            diceValues: gameState.game_data.diceValues || [],
             logs: [
-                ...gameState.game_data.logs,
+                ...(gameState.game_data.logs || []),
                 { message: createGameLogMessage('stop'), playerId }
             ]
         };
@@ -410,6 +422,7 @@ async function moveToNextTurn(
         const nextPlayerId = participants[nextIndex].user_id;
 
         // 現在のゲーム状態を取得（gameDataが渡されていない場合）
+        let finalGameData: GameData;
         if (!gameData) {
             const { data: currentGameState, error: getError } = await supabase
                 .from(DB_TABLES.GAME_STATES)
@@ -420,14 +433,25 @@ async function moveToNextTurn(
                 .single();
 
             if (getError) throw getError;
-            gameData = currentGameState.game_data;
+            
+            finalGameData = {
+                ...currentGameState.game_data,
+                // 必須プロパティを明示的に初期化
+                columns: currentGameState.game_data.columns || {},
+                tempMarkers: currentGameState.game_data.tempMarkers || {},
+                completedColumns: currentGameState.game_data.completedColumns || {},
+                diceValues: currentGameState.game_data.diceValues || [],
+                logs: currentGameState.game_data.logs || []
+            };
+        } else {
+            finalGameData = gameData;
         }
 
         // 次のターンのログを追加
         const updatedGameData: GameData = {
-            ...gameData,
+            ...finalGameData,
             logs: [
-                ...gameData.logs,
+                ...finalGameData.logs,
                 { message: GAME_MESSAGES.NEXT_TURN }
             ]
         };
@@ -435,28 +459,44 @@ async function moveToNextTurn(
         // ゲーム状態を更新
         const { data: currentGameState } = await supabase
             .from(DB_TABLES.GAME_STATES)
-            .select('id, turn_number')
+            .select('id')
             .eq('room_id', roomId)
             .order('created_at', { ascending: false })
             .limit(1)
             .single();
 
-        await supabase
-            .from(DB_TABLES.GAME_STATES)
-            .update({
-                current_turn_user_id: nextPlayerId,
-                turn_number: (currentGameState?.turn_number || 1) + 1,
-                game_data: updatedGameData,
-                phase: 'rolling',
-                updated_at: new Date().toISOString()
-            })
-            .eq('room_id', roomId)
-            .order('created_at', { ascending: false })
-            .limit(1);
+        if (currentGameState) {
+            const { error: updateError } = await supabase
+                .from(DB_TABLES.GAME_STATES)
+                .update({
+                    current_turn_user_id: nextPlayerId,
+                    turn_number: await getNextTurnNumber(supabase, roomId),
+                    game_data: updatedGameData,
+                    phase: 'rolling',
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', currentGameState.id);
 
+            if (updateError) throw updateError;
+        }
     } catch (error) {
         console.error('次のターン移行エラー:', error);
     }
+}
+
+/**
+ * 次のターン番号を取得
+ */
+async function getNextTurnNumber(supabase: any, roomId: string): Promise<number> {
+    const { data: currentGame } = await supabase
+        .from(DB_TABLES.GAME_STATES)
+        .select('turn_number')
+        .eq('room_id', roomId)
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .single();
+
+    return (currentGame?.turn_number || 0) + 1;
 }
 
 /**
@@ -477,8 +517,6 @@ async function updateWinStats(
             .eq('room_id', roomId)
             .eq('user_id', winnerId)
             .single();
-
-        if (getError && getError.code !== 'PGRST116') throw getError;
 
         const currentWins = currentStats?.wins_count || 0;
 

@@ -7,7 +7,15 @@ import { getRoomData } from "~/libs/cant-stop/database.server";
 import { formatUserFromAuth } from "~/libs/cant-stop/realtime.client";
 import { Header } from "~/components/Header";
 import { Footer } from "~/components/Footer";
-import type { Player, GameResult } from "~/libs/cant-stop/types";
+import type { 
+    Player, 
+    GameResult, 
+    GameRoom,
+    RoomParticipant,
+    RoomWins,
+    User,
+    GameLog
+} from "~/libs/cant-stop/types";
 import { getPlayerColor } from "~/utils/cant-stop/constants";
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
@@ -23,21 +31,21 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
     // ルーム情報を取得
     const roomResult = await getRoomData(request, roomId);
-    if (!roomResult.success) {
+    if (!roomResult.success || !roomResult.data) {
         return redirect("/games/cant-stop");
     }
 
     const { room, participants, winStats } = roomResult.data;
 
     // 現在のユーザーが参加者にいるかチェック
-    const isParticipant = participants.some(p => p.user_id === user.id);
+    const isParticipant = participants.some((p: RoomParticipant & { user: User | null }) => p.user_id === user.id);
     if (!isParticipant) {
         return redirect("/games/cant-stop");
     }
 
     // TODO: 実際のゲーム履歴を取得する
     // 今は仮のデータを使用
-    const gameHistory = [
+    const gameHistory: GameLog[] = [
         { message: 'ゲーム開始' },
         { message: 'コラム2を完成', playerId: participants[0]?.user_id },
         { message: 'コラム7を完成', playerId: participants[1]?.user_id },
@@ -48,7 +56,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     ];
 
     // プレイヤー情報を構築
-    const players: Player[] = participants.map((participant, index) => {
+    const players: Player[] = participants.map((participant: RoomParticipant & { user: User | null }, index: number) => {
         const userData = formatUserFromAuth(participant.user);
         return {
             id: participant.user_id,
@@ -65,221 +73,206 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
     // 勝利統計を整形
     const sortedWinStats = winStats
-        .map(stat => ({
+        .map((stat: RoomWins) => ({
             ...stat,
-            player: players.find(p => p.id === stat.user_id)!
+            player: players.find((p: Player) => p.id === stat.user_id)!
         }))
-        .filter(stat => stat.player) // プレイヤーが見つからない場合は除外
-        .sort((a, b) => b.wins_count - a.wins_count);
+        .sort((a: RoomWins & { player: Player }, b: RoomWins & { player: Player }) => b.wins_count - a.wins_count);
 
-    return json({
-        user,
-        room,
+    const gameResult: GameResult = {
         winner,
         players,
         winStats: sortedWinStats,
-        gameHistory
+        gameHistory,
+        roomId: room.id
+    };
+
+    return json({
+        user,
+        gameResult
     });
 }
 
-export async function action({ request, params }: ActionFunctionArgs) {
-    const user = await getUserFromSession(request);
-    if (!user) {
-        return redirect("/login");
-    }
-
-    const roomId = params.roomId;
-    if (!roomId) {
-        return redirect("/games/cant-stop");
-    }
-
-    const formData = await request.formData();
-    const action = formData.get("_action");
-
-    switch (action) {
-        case "return_to_lobby":
-            return redirect(`/games/cant-stop/lobby/${roomId}`);
-
-        default:
-            return json({ error: "不正なアクションです" });
-    }
-}
-
 export default function CantStopResult() {
-    const { user, room, winner, players, winStats, gameHistory } = useLoaderData<typeof loader>();
+    const { user, gameResult } = useLoaderData<typeof loader>();
+    const [showHistory, setShowHistory] = useState(false);
+
+    const totalGames = gameResult.winStats.reduce((sum: number, stat: RoomWins & { player: Player }) => sum + stat.wins_count, 0);
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
             <Header user={user} />
 
-            <main className="flex-1 mx-auto max-w-6xl px-6 py-8 lg:px-8">
-                {/* 勝者発表 */}
+            <main className="flex-1 mx-auto max-w-4xl px-6 py-8 lg:px-8">
+                {/* 勝利祝賀 */}
                 <div className="text-center mb-8">
-                    <h1 className="text-4xl font-bold text-gray-900 mb-6">ゲーム終了！</h1>
-                    
-                    <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-lg border border-gray-200 p-8 max-w-2xl mx-auto">
-                        {/* 勝者アバター */}
-                        <div className="flex justify-center mb-6">
-                            <div className="relative">
-                                {winner.avatar ? (
-                                    <img 
-                                        src={winner.avatar} 
-                                        alt={winner.username}
-                                        className="w-24 h-24 rounded-full border-4 border-yellow-400"
-                                    />
-                                ) : (
-                                    <div className="w-24 h-24 bg-gray-300 rounded-full border-4 border-yellow-400 flex items-center justify-center">
-                                        <svg className="w-12 h-12 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                                        </svg>
-                                    </div>
-                                )}
-                                {/* 王冠アイコン */}
-                                <div className="absolute -top-4 left-1/2 transform -translate-x-1/2">
-                                    <svg className="w-8 h-8 text-yellow-500" fill="currentColor" viewBox="0 0 24 24">
-                                        <path d="M12 6L9 9L6 6L3 9v11h18V9l-3-3-3 3-3-3z"/>
-                                    </svg>
-                                </div>
-                            </div>
+                    <div className="mb-6">
+                        <div className="inline-flex items-center justify-center w-24 h-24 bg-yellow-100 rounded-full mb-4">
+                            <svg className="w-12 h-12 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3l14 9-14 9V3z" />
+                            </svg>
                         </div>
-
-                        {/* 勝者名とカラー */}
-                        <div className="flex items-center justify-center space-x-3 mb-4">
-                            <div className={`w-6 h-6 rounded-full ${winner.color}`}></div>
-                            <h2 className="text-3xl font-bold text-gray-900">
-                                {winner.username}
-                            </h2>
-                        </div>
-                        
-                        <p className="text-xl text-gray-600 mb-6">勝利おめでとうございます！</p>
-                        
-                        {/* 勝利条件達成メッセージ */}
-                        <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
-                            <p className="text-yellow-800 font-medium">
-                                3つのコラムを完成させて勝利！
-                            </p>
+                        <h1 className="text-4xl font-bold text-gray-900 mb-2">
+                            ゲーム終了！
+                        </h1>
+                        <div className="flex items-center justify-center space-x-3">
+                            <div className={`w-6 h-6 rounded-full ${gameResult.winner.color}`}></div>
+                            <span className="text-2xl font-semibold text-gray-800">
+                                {gameResult.winner.username} の勝利！
+                            </span>
                         </div>
                     </div>
                 </div>
 
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    {/* 勝利統計 */}
-                    <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6">
-                        <h3 className="text-xl font-semibold mb-6 text-center">
-                            ルーム「{room.room_id}」勝利統計
-                        </h3>
-                        
+                    {/* 最終順位 */}
+                    <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-lg border border-gray-200 p-6">
+                        <h2 className="text-xl font-semibold text-gray-900 mb-6">今回の順位</h2>
                         <div className="space-y-4">
-                            {winStats.map((stat, index) => (
-                                <div
-                                    key={stat.user_id}
+                            {gameResult.players.map((player: Player, index: number) => (
+                                <div 
+                                    key={player.id}
                                     className={`flex items-center justify-between p-4 rounded-lg border-2 ${
                                         index === 0 
-                                            ? 'border-yellow-400 bg-yellow-50' 
-                                            : 'border-gray-200 bg-gray-50'
+                                            ? 'bg-yellow-50 border-yellow-200' 
+                                            : 'bg-gray-50 border-gray-200'
                                     }`}
                                 >
                                     <div className="flex items-center space-x-3">
-                                        {/* 順位 */}
-                                        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-sm ${
-                                            index === 0 ? 'bg-yellow-500 text-white' :
-                                            index === 1 ? 'bg-gray-400 text-white' :
-                                            index === 2 ? 'bg-orange-600 text-white' :
-                                            'bg-gray-300 text-gray-700'
-                                        }`}>
+                                        <div className="flex items-center justify-center w-8 h-8 bg-gray-200 rounded-full font-bold text-gray-700">
                                             {index + 1}
                                         </div>
-                                        
-                                        {/* プレイヤー情報 */}
-                                        <div className={`w-4 h-4 rounded-full ${stat.player.color}`}></div>
-                                        
-                                        {stat.player.avatar ? (
-                                            <img 
-                                                src={stat.player.avatar} 
-                                                alt={stat.player.username}
-                                                className="w-10 h-10 rounded-full"
-                                            />
-                                        ) : (
-                                            <div className="w-10 h-10 bg-gray-300 rounded-full flex items-center justify-center">
-                                                <svg className="w-6 h-6 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                                                </svg>
-                                            </div>
-                                        )}
-                                        
-                                        <span className="font-medium text-gray-900">
-                                            {stat.player.username}
-                                        </span>
-                                    </div>
-                                    
-                                    {/* 勝利数 */}
-                                    <div className="flex items-center space-x-2">
-                                        <span className="text-2xl font-bold text-gray-900">
-                                            {stat.wins_count}
-                                        </span>
-                                        <span className="text-sm text-gray-500">勝</span>
+                                        <div className={`w-4 h-4 rounded-full ${player.color}`}></div>
+                                        <div>
+                                            <span className="font-medium text-gray-900">
+                                                {player.username}
+                                            </span>
+                                            {index === 0 && (
+                                                <span className="ml-2 inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-yellow-100 text-yellow-800">
+                                                    <svg className="w-3 h-3 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 3l14 9-14 9V3z" />
+                                                    </svg>
+                                                    勝者
+                                                </span>
+                                            )}
+                                        </div>
                                     </div>
                                 </div>
                             ))}
                         </div>
-                        
-                        {/* 総ゲーム数 */}
-                        <div className="mt-6 pt-4 border-t border-gray-200 text-center">
-                            <p className="text-gray-600">
-                                総ゲーム数: <span className="font-semibold">
-                                    {winStats.reduce((sum, stat) => sum + stat.wins_count, 0)}
-                                </span>
-                            </p>
-                        </div>
+                    </div>
+
+                    {/* 通算統計 */}
+                    <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-lg border border-gray-200 p-6">
+                        <h2 className="text-xl font-semibold text-gray-900 mb-6">通算成績</h2>
+                        {gameResult.winStats.length > 0 ? (
+                            <div className="space-y-4">
+                                {gameResult.winStats.map((stat: RoomWins & { player: Player }, index: number) => (
+                                    <div key={stat.user_id} className="flex items-center justify-between">
+                                        <div className="flex items-center space-x-3">
+                                            <div className={`w-4 h-4 rounded-full ${stat.player.color}`}></div>
+                                            <span className="font-medium text-gray-900">
+                                                {stat.player.username}
+                                            </span>
+                                        </div>
+                                        <div className="text-right">
+                                            <div className="font-semibold text-gray-900">
+                                                {stat.wins_count}勝
+                                            </div>
+                                            <div className="text-sm text-gray-500">
+                                                勝率 {totalGames > 0 ? Math.round((stat.wins_count / totalGames) * 100) : 0}%
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        ) : (
+                            <p className="text-gray-500">統計データがありません</p>
+                        )}
                     </div>
 
                     {/* ゲーム履歴 */}
-                    <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6">
-                        <h3 className="text-xl font-semibold mb-6 text-center">
-                            今回のゲーム履歴
-                        </h3>
-                        
-                        <div className="space-y-2 max-h-64 overflow-y-auto">
-                            {gameHistory.map((event, index) => {
-                                const player = event.playerId ? players.find(p => p.id === event.playerId) : null;
-                                
-                                return (
-                                    <div 
-                                        key={index}
-                                        className="flex items-start space-x-3 text-sm text-gray-700 py-2 px-3 bg-white rounded border"
-                                    >
-                                        <div 
-                                            className={`w-1 h-full min-h-[1.25rem] rounded-full flex-shrink-0 ${
-                                                player ? player.color : 'bg-gray-300'
-                                            }`} 
-                                        />
-                                        <span className="flex-1">
-                                            {player && (
-                                                <span className="font-medium">{player.username}が</span>
+                    <div className="lg:col-span-2">
+                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-lg border border-gray-200 p-6">
+                            <div className="flex items-center justify-between mb-6">
+                                <h2 className="text-xl font-semibold text-gray-900">ゲーム履歴</h2>
+                                <button
+                                    onClick={() => setShowHistory(!showHistory)}
+                                    className="text-indigo-600 hover:text-indigo-800 text-sm font-medium"
+                                >
+                                    {showHistory ? '履歴を隠す' : '履歴を表示'}
+                                </button>
+                            </div>
+                            
+                            {showHistory && (
+                                <div className="space-y-2 max-h-64 overflow-y-auto">
+                                    {gameResult.gameHistory.map((log: GameLog, index: number) => (
+                                        <div key={index} className="text-sm text-gray-600 p-2 bg-gray-50 rounded">
+                                            {log.playerId ? (
+                                                <span>
+                                                    <span className="font-medium">
+                                                        {gameResult.players.find((p: Player) => p.id === log.playerId)?.username}
+                                                    </span>
+                                                    : {log.message}
+                                                </span>
+                                            ) : (
+                                                log.message
                                             )}
-                                            {event.message}
-                                        </span>
-                                    </div>
-                                );
-                            })}
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     </div>
                 </div>
 
                 {/* アクションボタン */}
-                <div className="mt-8 flex justify-center">
-                    <Form method="post">
-                        <input type="hidden" name="_action" value="return_to_lobby" />
+                <div className="mt-8 flex flex-col sm:flex-row gap-4 justify-center">
+                    <Form method="get" action={`/games/cant-stop/lobby/${gameResult.roomId}`}>
                         <button
                             type="submit"
-                            className="px-8 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium transition-colors flex items-center justify-center"
+                            className="px-6 py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 transition-colors w-full sm:w-auto"
                         >
-                            <svg className="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
-                            </svg>
-                            ロビーに戻る
+                            もう一度プレイ
                         </button>
                     </Form>
+                    
+                    <Form method="get" action="/games/cant-stop">
+                        <button
+                            type="submit"
+                            className="px-6 py-3 bg-gray-600 text-white rounded-lg font-medium hover:bg-gray-700 transition-colors w-full sm:w-auto"
+                        >
+                            別のルームに参加
+                        </button>
+                    </Form>
+                    
+                    <Form method="get" action="/">
+                        <button
+                            type="submit"
+                            className="px-6 py-3 bg-gray-200 text-gray-800 rounded-lg font-medium hover:bg-gray-300 transition-colors w-full sm:w-auto"
+                        >
+                            ホームに戻る
+                        </button>
+                    </Form>
+                </div>
+
+                {/* ゲーム説明（次回のため） */}
+                <div className="mt-12 bg-white/60 backdrop-blur-sm rounded-lg shadow border border-gray-200 p-6">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Can't Stop とは</h3>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6 text-sm text-gray-600">
+                        <div>
+                            <h4 className="font-medium text-gray-900 mb-2">ゲームの目標</h4>
+                            <p>3つのコラムを最初に完成させたプレイヤーが勝利します。</p>
+                        </div>
+                        <div>
+                            <h4 className="font-medium text-gray-900 mb-2">基本ルール</h4>
+                            <ul className="space-y-1">
+                                <li>• 4つのサイコロを振って進路を選択</li>
+                                <li>• 進むかストップするかを決断</li>
+                                <li>• バストすると一時的な進行がリセット</li>
+                            </ul>
+                        </div>
+                    </div>
                 </div>
             </main>
 

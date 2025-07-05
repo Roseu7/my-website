@@ -67,6 +67,18 @@ export async function joinOrCreateRoom(
             throw roomError;
         } else {
             room = existingRoom;
+            
+            // ルーム満員チェック
+            const { data: currentParticipants, error: participantCountError } = await supabase
+                .from(DB_TABLES.ROOM_PARTICIPANTS)
+                .select('user_id')
+                .eq('room_id', room.id);
+
+            if (participantCountError) throw participantCountError;
+            
+            if (currentParticipants.length >= room.max_players) {
+                return { success: false, error: ERROR_MESSAGES.ROOM_FULL };
+            }
         }
 
         // 既に参加しているかチェック
@@ -111,6 +123,130 @@ export async function joinOrCreateRoom(
         return { success: true, data: room };
     } catch (error) {
         console.error('ルーム参加エラー:', error);
+        return { 
+            success: false, 
+            error: error instanceof Error ? error.message : String(error) 
+        };
+    }
+}
+
+/**
+ * ルーム情報と参加者一覧を取得
+ */
+export async function getRoomData(
+    request: Request, 
+    roomId: string
+): Promise<DatabaseResult<{
+    room: GameRoom;
+    participants: (RoomParticipant & { user: User | null })[];
+    winStats: RoomWins[];
+}>> {
+    const { supabase } = createSupabaseServerClient(request);
+
+    try {
+        // ルーム情報を取得（room_idかidかを判別）
+        let room;
+        let roomError;
+        
+        // UUIDかどうかをチェック
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
+        
+        if (isUUID) {
+            // UUIDの場合はidで検索
+            const result = await supabase
+                .from(DB_TABLES.GAME_ROOMS)
+                .select('*')
+                .eq('id', roomId)
+                .single();
+            room = result.data;
+            roomError = result.error;
+        } else {
+            // 文字列の場合はroom_idで検索
+            const result = await supabase
+                .from(DB_TABLES.GAME_ROOMS)
+                .select('*')
+                .eq('room_id', roomId.toLowerCase())
+                .single();
+            room = result.data;
+            roomError = result.error;
+        }
+
+        if (roomError) throw roomError;
+
+        // 参加者一覧を取得（ユーザー情報も含む）
+        const { data: participantsData, error: participantsError } = await supabase
+            .from(DB_TABLES.ROOM_PARTICIPANTS)
+            .select('*')
+            .eq('room_id', roomId)
+            .order('joined_at', { ascending: true });
+
+        if (participantsError) throw participantsError;
+
+        // 参加者のユーザー情報を個別に取得
+        const participants = [];
+        if (participantsData) {
+            for (const participant of participantsData) {
+                const { data: userData } = await supabase.auth.admin.getUserById(participant.user_id);
+                participants.push({
+                    ...participant,
+                    user: userData.user ? {
+                        id: userData.user.id,
+                        email: userData.user.email,
+                        raw_user_meta_data: userData.user.user_metadata
+                    } : null
+                });
+            }
+        }
+
+        // 勝利統計を取得
+        const { data: winStats, error: winStatsError } = await supabase
+            .from(DB_TABLES.ROOM_WINS)
+            .select('*')
+            .eq('room_id', roomId)
+            .order('wins_count', { ascending: false });
+
+        if (winStatsError) throw winStatsError;
+
+        return {
+            success: true,
+            data: {
+                room,
+                participants: participants as (RoomParticipant & { user: User | null })[],
+                winStats: winStats || []
+            }
+        };
+    } catch (error) {
+        console.error('ルーム情報取得エラー:', error);
+        return { 
+            success: false, 
+            error: error instanceof Error ? error.message : String(error) 
+        };
+    }
+}
+
+/**
+ * ゲーム状態を取得
+ */
+export async function getGameState(
+    request: Request, 
+    roomId: string
+): Promise<DatabaseResult<GameState>> {
+    const { supabase } = createSupabaseServerClient(request);
+
+    try {
+        const { data: gameState, error } = await supabase
+            .from(DB_TABLES.GAME_STATES)
+            .select('*')
+            .eq('room_id', roomId)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+        if (error) throw error;
+
+        return { success: true, data: gameState };
+    } catch (error) {
+        console.error('ゲーム状態取得エラー:', error);
         return { 
             success: false, 
             error: error instanceof Error ? error.message : String(error) 
@@ -291,8 +427,9 @@ export async function startGame(
         // 全員の準備完了をチェック
         const { data: participants, error: participantsError } = await supabase
             .from(DB_TABLES.ROOM_PARTICIPANTS)
-            .select('is_ready')
-            .eq('room_id', roomId);
+            .select('user_id, is_ready')
+            .eq('room_id', roomId)
+            .order('joined_at', { ascending: true });
 
         if (participantsError) throw participantsError;
         if (participants.length < GAME_SETTINGS.MIN_PLAYERS) {
@@ -319,11 +456,14 @@ export async function startGame(
             logs: [{ message: GAME_MESSAGES.GAME_START }]
         };
 
+        // 最初のプレイヤー（参加順）
+        const firstPlayerId = participants[0].user_id;
+
         const { error: gameStateError } = await supabase
             .from(DB_TABLES.GAME_STATES)
             .insert({
                 room_id: roomId,
-                current_turn_user_id: hostUserId, // 最初はホストから開始
+                current_turn_user_id: firstPlayerId,
                 turn_number: 1,
                 game_data: initialGameData,
                 phase: 'rolling'
@@ -334,108 +474,6 @@ export async function startGame(
         return { success: true };
     } catch (error) {
         console.error('ゲーム開始エラー:', error);
-        return { 
-            success: false, 
-            error: error instanceof Error ? error.message : String(error) 
-        };
-    }
-}
-
-/**
- * ルーム情報と参加者一覧を取得
- */
-export async function getRoomData(
-    request: Request, 
-    roomId: string
-): Promise<DatabaseResult<{
-    room: GameRoom;
-    participants: (RoomParticipant & { user: User | null })[];
-    winStats: RoomWins[];
-}>> {
-    const { supabase } = createSupabaseServerClient(request);
-
-    try {
-        // ルーム情報を取得
-        const { data: room, error: roomError } = await supabase
-            .from(DB_TABLES.GAME_ROOMS)
-            .select('*')
-            .eq('id', roomId)
-            .single();
-
-        if (roomError) throw roomError;
-
-        // 参加者一覧を取得（ユーザー情報も含む）
-        const { data: participantsData, error: participantsError } = await supabase
-            .from(DB_TABLES.ROOM_PARTICIPANTS)
-            .select('*')
-            .eq('room_id', roomId);
-
-        if (participantsError) throw participantsError;
-
-        // 参加者のユーザー情報を個別に取得
-        const participants = [];
-        if (participantsData) {
-            for (const participant of participantsData) {
-                const { data: userData } = await supabase.auth.admin.getUserById(participant.user_id);
-                participants.push({
-                    ...participant,
-                    user: userData.user ? {
-                        id: userData.user.id,
-                        email: userData.user.email,
-                        raw_user_meta_data: userData.user.user_metadata
-                    } : null
-                });
-            }
-        }
-
-        // 勝利統計を取得
-        const { data: winStats, error: winStatsError } = await supabase
-            .from(DB_TABLES.ROOM_WINS)
-            .select('*')
-            .eq('room_id', roomId);
-
-        if (winStatsError) throw winStatsError;
-
-        return {
-            success: true,
-            data: {
-                room,
-                participants: participants as (RoomParticipant & { user: User | null })[],
-                winStats: winStats || []
-            }
-        };
-    } catch (error) {
-        console.error('ルーム情報取得エラー:', error);
-        return { 
-            success: false, 
-            error: error instanceof Error ? error.message : String(error) 
-        };
-    }
-}
-
-/**
- * ゲーム状態を取得
- */
-export async function getGameState(
-    request: Request, 
-    roomId: string
-): Promise<DatabaseResult<GameState>> {
-    const { supabase } = createSupabaseServerClient(request);
-
-    try {
-        const { data: gameState, error } = await supabase
-            .from(DB_TABLES.GAME_STATES)
-            .select('*')
-            .eq('room_id', roomId)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .single();
-
-        if (error) throw error;
-
-        return { success: true, data: gameState };
-    } catch (error) {
-        console.error('ゲーム状態取得エラー:', error);
         return { 
             success: false, 
             error: error instanceof Error ? error.message : String(error) 

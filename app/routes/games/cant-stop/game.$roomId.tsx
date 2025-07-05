@@ -13,17 +13,26 @@ import {
 import { createRealtimeClient, formatUserFromAuth } from "~/libs/cant-stop/realtime.client";
 import { Header } from "~/components/Header";
 import { Footer } from "~/components/Footer";
+import { 
+    GameBoard, 
+    DiceRoller, 
+    PlayerList, 
+    GameLog 
+} from "~/components/cant-stop";
 import type { 
     ClientGameState, 
     Player, 
     GameState as GameStateType,
-    GameData 
+    GameData,
+    RoomParticipant,
+    User 
 } from "~/libs/cant-stop/types";
 import { 
     getPlayerColor, 
     COLUMN_HEIGHTS, 
     GAME_SETTINGS 
 } from "~/utils/cant-stop/constants";
+import { getValidCombinations, calculateDiceCombinations } from "~/utils/cant-stop/helpers";
 
 export async function loader({ request, params }: LoaderFunctionArgs) {
     const user = await getUserFromSession(request);
@@ -38,14 +47,14 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
     // ルーム情報を取得
     const roomResult = await getRoomData(request, roomId);
-    if (!roomResult.success) {
+    if (!roomResult.success || !roomResult.data) {
         return redirect("/games/cant-stop");
     }
 
     const { room, participants } = roomResult.data;
 
     // 現在のユーザーが参加者にいるかチェック
-    const isParticipant = participants.some(p => p.user_id === user.id);
+    const isParticipant = participants.some((p: RoomParticipant & { user: User | null }) => p.user_id === user.id);
     if (!isParticipant) {
         return redirect("/games/cant-stop");
     }
@@ -57,14 +66,14 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
     // ゲーム状態を取得
     const gameStateResult = await getGameState(request, roomId);
-    if (!gameStateResult.success) {
+    if (!gameStateResult.success || !gameStateResult.data) {
         return redirect(`/games/cant-stop/lobby/${roomId}`);
     }
 
     const gameState = gameStateResult.data;
 
     // プレイヤー情報を構築
-    const players: Player[] = participants.map((participant, index) => {
+    const players: Player[] = participants.map((participant: RoomParticipant & { user: User | null }, index: number) => {
         const userData = formatUserFromAuth(participant.user);
         return {
             id: participant.user_id,
@@ -107,7 +116,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
             }
             
             // バストの場合は特別な処理
-            if (!result.data.canContinue) {
+            if (!result.data?.canContinue) {
                 return json({ 
                     success: true, 
                     bust: true,
@@ -117,7 +126,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
             
             return json({ 
                 success: true, 
-                combinations: result.data.combinations 
+                combinations: result.data?.combinations || [] 
             });
         }
 
@@ -148,7 +157,7 @@ export async function action({ request, params }: ActionFunctionArgs) {
             }
             
             // ゲーム終了の場合は結果画面にリダイレクト
-            if (result.data.gameEnded) {
+            if (result.data?.gameEnded) {
                 return redirect(`/games/cant-stop/result/${roomId}`);
             }
             
@@ -188,9 +197,16 @@ export default function CantStopGame() {
     // リアルタイム更新用の状態
     const [room, setRoom] = useState(initialRoom);
     const [players, setPlayers] = useState(initialPlayers);
-    const [gameState, setGameState] = useState(initialGameState);
+    const [gameState, setGameState] = useState<GameStateType | null>(initialGameState);
     const [isCurrentTurn, setIsCurrentTurn] = useState(initialIsCurrentTurn);
+    const [connectionStatus, setConnectionStatus] = useState<'connected' | 'disconnected' | 'error'>('connected');
+
+    // ゲーム専用の状態
     const [availableCombinations, setAvailableCombinations] = useState<number[][]>([]);
+    const [selectedCombination, setSelectedCombination] = useState<number[] | null>(null);
+    const [diceRolling, setDiceRolling] = useState(false);
+
+    const isSubmitting = navigation.state === "submitting";
 
     // リアルタイム通信の設定
     useEffect(() => {
@@ -198,28 +214,34 @@ export default function CantStopGame() {
 
         // ゲーム状態の変更を監視
         realtimeClient.subscribeToGame({
-            onGameStateChanged: (updatedGameState) => {
+            onGameStateChanged: (updatedGameState: GameStateType) => {
                 setGameState(updatedGameState);
-                setIsCurrentTurn(user.id === updatedGameState.current_turn_user_id);
+                setIsCurrentTurn(updatedGameState.current_turn_user_id === user.id);
                 
                 // 組み合わせ選択フェーズの場合、利用可能な組み合わせを計算
-                if (updatedGameState.phase === 'choosing' && updatedGameState.game_data.diceValues) {
-                    // TODO: ここで組み合わせを計算してsetAvailableCombinations
+                if (updatedGameState.phase === 'choosing' && updatedGameState.game_data.diceValues?.length === 4) {
+                    const allCombinations = calculateDiceCombinations(updatedGameState.game_data.diceValues);
+                    const validCombinations = getValidCombinations(allCombinations, updatedGameState.game_data, user.id);
+                    setAvailableCombinations(validCombinations);
                 }
             },
-            onGameEnded: (result) => {
+            onGameEnded: (result: any) => {
                 // ゲーム終了時は結果画面に遷移
                 window.location.href = `/games/cant-stop/result/${room.id}`;
+            },
+            onConnectionStateChanged: (state: any) => {
+                setConnectionStatus(state.game === 'connected' ? 'connected' : 
+                                 state.game === 'error' ? 'error' : 'disconnected');
             }
         });
 
         return () => {
-            realtimeClient.unsubscribeAll();
+            realtimeClient.cleanup();
         };
     }, [room.id, user.id]);
 
-    // ゲームデータの取得
-    const gameData: GameData = gameState.game_data || {
+    // ゲームデータの取得（安全なアクセス）
+    const gameData: GameData = gameState?.game_data || {
         columns: {},
         tempMarkers: {},
         completedColumns: {},
@@ -227,335 +249,226 @@ export default function CantStopGame() {
         logs: []
     };
 
-    // コラムを描画
-    const renderColumn = (columnNumber: number) => {
-        const height = COLUMN_HEIGHTS[columnNumber];
-        const maxHeight = Math.max(...Object.values(COLUMN_HEIGHTS));
+    // サイコロを振る処理
+    const handleRollDice = async () => {
+        setDiceRolling(true);
+        setAvailableCombinations([]);
+        setSelectedCombination(null);
         
-        // 中央揃えのための計算
-        const centerLine = Math.ceil(maxHeight / 2);
-        const columnCenter = Math.ceil(height / 2);
-        const offset = centerLine - columnCenter;
+        const form = new FormData();
+        form.append("_action", "roll_dice");
+        
+        try {
+            const response = await fetch(`/games/cant-stop/game/${room.id}`, {
+                method: "POST",
+                body: form
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                if (result.bust) {
+                    // バストの処理
+                    setAvailableCombinations([]);
+                } else {
+                    setAvailableCombinations(result.combinations || []);
+                }
+            }
+        } catch (error) {
+            console.error('サイコロ振りエラー:', error);
+        } finally {
+            setDiceRolling(false);
+        }
+    };
 
+    // 組み合わせ選択処理
+    const handleCombinationSelect = (combination: number[]) => {
+        setSelectedCombination(combination);
+    };
+
+    // 組み合わせ確定処理
+    const handleCombinationConfirm = async () => {
+        if (!selectedCombination) return;
+        
+        const form = new FormData();
+        form.append("_action", "choose_combination");
+        form.append("combination", JSON.stringify(selectedCombination));
+        
+        try {
+            const response = await fetch(`/games/cant-stop/game/${room.id}`, {
+                method: "POST",
+                body: form
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                setAvailableCombinations([]);
+                setSelectedCombination(null);
+            }
+        } catch (error) {
+            console.error('組み合わせ選択エラー:', error);
+        }
+    };
+
+    // フェーズに応じた表示テキスト
+    const getPhaseText = (): string => {
+        if (!gameState) return '';
+        
+        const currentPlayer = players.find(p => p.id === gameState.current_turn_user_id);
+        
+        switch (gameState.phase) {
+            case 'rolling':
+                return isCurrentTurn ? 'サイコロを振ってください' : `${currentPlayer?.username}のターン`;
+            case 'choosing':
+                return isCurrentTurn ? '組み合わせを選択してください' : '組み合わせを選択中...';
+            case 'deciding':
+                return isCurrentTurn ? '進むかストップするか選択してください' : '進むかストップするか選択中...';
+            case 'busting':
+                return 'バスト！';
+            default:
+                return '';
+        }
+    };
+
+    // エラーメッセージの表示
+    const getErrorMessage = (): string | null => {
+        if (actionData && 'error' in actionData && typeof actionData.error === 'string') {
+            return actionData.error;
+        }
+        return null;
+    };
+
+    if (!gameState) {
         return (
-            <div key={columnNumber} className="flex flex-col items-center">
-                {/* コラム番号 */}
-                <div className="text-lg font-bold text-gray-700 mb-2">{columnNumber}</div>
-                
-                {/* 上部スペース */}
-                {offset > 0 && (
-                    <div style={{ height: `${offset * 28}px` }}></div>
-                )}
-                
-                {/* マス目 */}
-                <div className="flex flex-col-reverse space-y-reverse space-y-1">
-                    {Array.from({ length: height }, (_, i) => {
-                        const step = i + 1;
-                        const columnData = gameData.columns[columnNumber] || {};
-                        
-                        // このステップに到達したプレイヤーを取得
-                        const playersAtStep = players.filter(player => {
-                            const progress = columnData[player.id] || 0;
-                            return progress >= step;
-                        });
-
-                        // 一時マーカーをチェック
-                        let hasTemp = false;
-                        let tempPlayer = null;
-                        if (gameData.tempMarkers[columnNumber]) {
-                            const tempPlayerId = gameData.tempMarkers[columnNumber];
-                            const currentProgress = columnData[tempPlayerId] || 0;
-                            if (step === currentProgress + 1) {
-                                hasTemp = true;
-                                tempPlayer = players.find(p => p.id === tempPlayerId);
-                            }
-                        }
-
-                        return (
-                            <div
-                                key={step}
-                                className={`w-8 h-6 border-2 border-gray-300 rounded relative overflow-hidden ${
-                                    hasTemp ? 'ring-2 ring-yellow-400 ring-opacity-60' : ''
-                                }`}
-                            >
-                                {playersAtStep.length > 0 ? (
-                                    // 複数プレイヤーがいる場合は色を分割
-                                    <div className="flex h-full w-full">
-                                        {playersAtStep.map((player, index) => (
-                                            <div
-                                                key={player.id}
-                                                className={`${player.color} flex-1`}
-                                                style={{ 
-                                                    width: `${100 / playersAtStep.length}%` 
-                                                }}
-                                            />
-                                        ))}
-                                    </div>
-                                ) : hasTemp && tempPlayer ? (
-                                    // 一時マーカーのみ
-                                    <div className={`${tempPlayer.color} w-full h-full opacity-70`} />
-                                ) : (
-                                    // 空のマス
-                                    <div className="bg-gray-100 w-full h-full" />
-                                )}
-                            </div>
-                        );
-                    })}
-                </div>
-
-                {/* 下部スペース */}
-                {(maxHeight - height - offset) > 0 && (
-                    <div style={{ height: `${(maxHeight - height - offset) * 28}px` }}></div>
-                )}
-                
-                {/* 進行状況 */}
-                <div className="text-xs text-gray-500 mt-2">
-                    {Object.entries(gameData.columns[columnNumber] || {}).map(([playerId, progress]) => {
-                        const player = players.find(p => p.id === playerId);
-                        return player ? (
-                            <div key={playerId} className="flex items-center space-x-1">
-                                <div className={`w-3 h-3 rounded-full ${player.color}`}></div>
-                                <span>{progress}</span>
-                            </div>
-                        ) : null;
-                    })}
+            <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex items-center justify-center">
+                <div className="text-center">
+                    <p className="text-lg text-gray-600">ゲーム状態を読み込み中...</p>
                 </div>
             </div>
         );
-    };
+    }
 
     return (
         <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 flex flex-col">
             <Header user={user} />
 
             <main className="flex-1 mx-auto max-w-7xl px-6 py-8 lg:px-8">
-                {/* ゲームタイトル */}
+                {/* ゲームヘッダー */}
                 <div className="text-center mb-6">
                     <h1 className="text-3xl font-bold text-gray-900 mb-2">Can't Stop</h1>
-                    <div className="text-lg text-gray-600">
-                        現在のターン: 
-                        <span className="ml-2 font-semibold text-indigo-600">
-                            {players.find(p => p.id === gameState.current_turn_user_id)?.username}
+                    <p className="text-lg text-gray-600">{getPhaseText()}</p>
+                    
+                    {/* 接続状態インジケーター */}
+                    <div className="flex items-center justify-center space-x-2 mt-2">
+                        <div className={`w-3 h-3 rounded-full ${
+                            connectionStatus === 'connected' ? 'bg-green-400' :
+                            connectionStatus === 'error' ? 'bg-red-400' : 'bg-yellow-400'
+                        }`} />
+                        <span className="text-sm text-gray-500">
+                            {connectionStatus === 'connected' ? '接続中' :
+                             connectionStatus === 'error' ? '接続エラー' : '再接続中...'}
                         </span>
                     </div>
                 </div>
 
                 {/* エラーメッセージ */}
-                {actionData?.error && (
-                    <div className="mb-4 p-4 bg-red-100 border border-red-300 rounded-lg text-red-700 text-center">
-                        {actionData.error}
+                {getErrorMessage() && (
+                    <div className="mb-6 bg-red-50 border border-red-200 rounded-md p-3">
+                        <p className="text-sm text-red-600">{getErrorMessage()}</p>
                     </div>
                 )}
 
-                <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
-                    {/* メインゲームボード */}
-                    <div className="lg:col-span-3">
-                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6">
-                            <h2 className="text-xl font-semibold text-center mb-6">ゲームボード</h2>
-                            
-                            {/* ボード */}
-                            <div className="flex justify-center space-x-4 overflow-x-auto pb-4">
-                                {Object.keys(COLUMN_HEIGHTS).map(col => renderColumn(parseInt(col)))}
-                            </div>
-                        </div>
+                <div className="grid grid-cols-1 xl:grid-cols-4 gap-8">
+                    {/* メインゲームエリア */}
+                    <div className="xl:col-span-3 space-y-6">
+                        {/* ゲームボード */}
+                        <GameBoard
+                            gameData={gameData}
+                            players={players}
+                            highlightedColumns={selectedCombination || []}
+                            isInteractive={false}
+                        />
 
                         {/* ゲームコントロール */}
-                        <div className="mt-6 bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6">
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                                {/* サイコロエリア */}
-                                <div>
-                                    <h3 className="text-lg font-medium mb-4">サイコロ</h3>
-                                    <div className="flex flex-wrap justify-center gap-3 mb-4">
-                                        {gameData.diceValues.map((value, index) => (
-                                            <div
-                                                key={index}
-                                                className="w-12 h-12 bg-white border-2 border-gray-300 rounded-lg flex items-center justify-center text-xl font-bold shadow-sm"
-                                            >
-                                                {value}
-                                            </div>
-                                        ))}
-                                    </div>
-                                    
-                                    {gameState.phase === 'rolling' && isCurrentTurn && (
-                                        <Form method="post">
-                                            <input type="hidden" name="_action" value="roll_dice" />
-                                            <button
-                                                type="submit"
-                                                disabled={navigation.state === "submitting"}
-                                                className="w-full py-3 px-4 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors"
-                                            >
-                                                サイコロを振る
-                                            </button>
-                                        </Form>
-                                    )}
-                                </div>
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* サイコロエリア */}
+                            <DiceRoller
+                                diceValues={gameData.diceValues}
+                                isRolling={diceRolling}
+                                canRoll={isCurrentTurn && gameState.phase === 'rolling'}
+                                onRoll={handleRollDice}
+                                showCombinations={gameState.phase === 'choosing' && isCurrentTurn}
+                                availableCombinations={availableCombinations}
+                                selectedCombination={selectedCombination}
+                                onCombinationSelect={handleCombinationSelect}
+                                onCombinationConfirm={handleCombinationConfirm}
+                                isSubmitting={isSubmitting}
+                            />
 
-                                {/* 組み合わせ選択 */}
-                                <div>
-                                    <h3 className="text-lg font-medium mb-4">組み合わせ選択</h3>
-                                    {gameState.phase === 'choosing' && isCurrentTurn ? (
-                                        <div className="space-y-3">
-                                            {/* TODO: 利用可能な組み合わせを表示 */}
-                                            <div className="text-gray-500 text-center py-4">
-                                                組み合わせを選択してください
-                                            </div>
-                                        </div>
-                                    ) : gameState.phase === 'deciding' && isCurrentTurn ? (
-                                        <div className="space-y-3">
-                                            <div className="p-3 bg-yellow-100 border border-yellow-300 rounded-lg text-center">
-                                                選択中の組み合わせ
-                                            </div>
-                                            <Form method="post" className="space-y-2">
+                            {/* ゲームアクション */}
+                            <div className="bg-white rounded-lg border border-gray-200 p-6">
+                                <h3 className="text-lg font-semibold text-gray-900 mb-4">アクション</h3>
+                                
+                                <div className="space-y-3">
+                                    {/* 進む/ストップ */}
+                                    {isCurrentTurn && gameState.phase === 'deciding' && (
+                                        <>
+                                            <Form method="post" className="w-full">
                                                 <input type="hidden" name="_action" value="continue_game" />
                                                 <button
                                                     type="submit"
-                                                    className="w-full p-3 bg-green-100 hover:bg-green-200 border border-green-300 rounded-lg transition-colors font-medium"
+                                                    disabled={isSubmitting}
+                                                    className="w-full bg-blue-600 text-white py-3 px-4 rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium transition-colors"
                                                 >
                                                     進む
                                                 </button>
                                             </Form>
-                                            <Form method="post">
+                                            
+                                            <Form method="post" className="w-full">
                                                 <input type="hidden" name="_action" value="stop_turn" />
                                                 <button
                                                     type="submit"
-                                                    className="w-full p-3 bg-red-100 hover:bg-red-200 border border-red-300 rounded-lg transition-colors font-medium"
+                                                    disabled={isSubmitting}
+                                                    className="w-full bg-yellow-600 text-white py-3 px-4 rounded-lg hover:bg-yellow-700 disabled:opacity-50 font-medium transition-colors"
                                                 >
                                                     ストップ
                                                 </button>
                                             </Form>
-                                        </div>
-                                    ) : gameState.phase === 'busting' ? (
-                                        <div className="text-center py-8">
-                                            <div className="text-red-600 font-medium mb-2">バスト！</div>
-                                            <div className="text-gray-500 text-sm">進行可能な組み合わせがありません</div>
-                                            <div className="text-gray-500 text-sm">一時進行をリセット中...</div>
-                                        </div>
-                                    ) : (
-                                        <div className="text-gray-500 text-center py-8">
-                                            {isCurrentTurn ? 'サイコロを振ってください' : '他のプレイヤーのターンです'}
-                                        </div>
+                                        </>
                                     )}
+
+                                    {/* ゲーム退出 */}
+                                    <Form method="post">
+                                        <input type="hidden" name="_action" value="exit_game" />
+                                        <button
+                                            type="submit"
+                                            className="w-full bg-gray-600 text-white py-2 px-4 rounded-lg hover:bg-gray-700 font-medium transition-colors"
+                                        >
+                                            ロビーに戻る
+                                        </button>
+                                    </Form>
                                 </div>
                             </div>
                         </div>
                     </div>
 
-                    {/* 参加者一覧・情報パネル */}
+                    {/* サイドバー */}
                     <div className="space-y-6">
-                        {/* 参加者一覧 */}
-                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6 min-w-60">
-                            <h3 className="text-lg font-medium mb-4">参加者</h3>
-                            <div className="space-y-3">
-                                {players.map((player) => (
-                                    <div
-                                        key={player.id}
-                                        className={`flex items-center space-x-3 p-3 rounded-lg border-2 ${
-                                            player.isCurrentTurn 
-                                                ? 'border-indigo-500 bg-indigo-50' 
-                                                : 'border-gray-200 bg-gray-50'
-                                        }`}
-                                    >
-                                        {/* プレイヤーカラー */}
-                                        <div className={`w-4 h-4 rounded-full ${player.color}`}></div>
-                                        
-                                        {/* アバター */}
-                                        {player.avatar ? (
-                                            <img 
-                                                src={player.avatar} 
-                                                alt={player.username}
-                                                className="w-8 h-8 rounded-full"
-                                            />
-                                        ) : (
-                                            <div className="w-8 h-8 bg-gray-300 rounded-full flex items-center justify-center">
-                                                <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
-                                                </svg>
-                                            </div>
-                                        )}
-                                        
-                                        {/* ユーザー名 */}
-                                        <span className={`font-medium ${
-                                            player.isCurrentTurn ? 'text-indigo-700' : 'text-gray-900'
-                                        }`}>
-                                            {player.username}
-                                        </span>
-                                        
-                                        {/* ターン表示 */}
-                                        {player.isCurrentTurn && (
-                                            <span className="text-xs bg-indigo-600 text-white px-2 py-1 rounded-full">
-                                                ターン中
-                                            </span>
-                                        )}
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-
-                        {/* ゲーム情報 */}
-                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6 min-w-60">
-                            <h3 className="text-lg font-medium mb-4">ゲーム情報</h3>
-                            <div className="space-y-2 text-sm">
-                                <div className="flex justify-between">
-                                    <span className="text-gray-600">完成コラム:</span>
-                                    <span className="font-medium">{Object.keys(gameData.completedColumns).length}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                    <span className="text-gray-600">アクティブマーカー:</span>
-                                    <span className="font-medium">{Object.keys(gameData.tempMarkers).length}/3</span>
-                                </div>
-                                <div className="flex justify-between">
-                                    <span className="text-gray-600">ターン数:</span>
-                                    <span className="font-medium">{gameState.turn_number}</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* アクション */}
-                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6 min-w-60">
-                            <div className="space-y-3">
-                                <button className="w-full h-10 px-4 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg transition-colors flex items-center justify-center">
-                                    設定
-                                </button>
-                                <Form method="post">
-                                    <input type="hidden" name="_action" value="exit_game" />
-                                    <button 
-                                        type="submit"
-                                        className="w-full h-10 px-4 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg transition-colors flex items-center justify-center"
-                                    >
-                                        退出
-                                    </button>
-                                </Form>
-                            </div>
-                        </div>
+                        {/* プレイヤー一覧 */}
+                        <PlayerList
+                            players={players}
+                            currentUserId={user.id}
+                            mode="game"
+                        />
 
                         {/* ゲームログ */}
-                        <div className="bg-white/80 backdrop-blur-sm rounded-lg shadow-sm border border-gray-200 p-6 min-w-60">
-                            <h3 className="text-lg font-medium mb-4">ゲームログ</h3>
-                            <div className="space-y-1 max-h-40 overflow-y-auto">
-                                {gameData.logs.slice(-8).map((log, index) => {
-                                    const player = log.playerId ? players.find(p => p.id === log.playerId) : null;
-                                    
-                                    return (
-                                        <div 
-                                            key={index} 
-                                            className="text-sm text-gray-700 py-2 px-3 border border-gray-100 rounded bg-white flex items-start space-x-3"
-                                        >
-                                            <div 
-                                                className={`w-1 h-full min-h-[1.25rem] rounded-full flex-shrink-0 ${
-                                                    player ? player.color : 'bg-gray-300'
-                                                }`} 
-                                            />
-                                            <span className="flex-1">
-                                                {player && (
-                                                    <span className="font-medium">{player.username}が</span>
-                                                )}
-                                                {log.message}
-                                            </span>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
+                        <GameLog
+                            logs={gameData.logs}
+                            players={players}
+                            showTimestamps={true}
+                            autoScroll={true}
+                        />
                     </div>
                 </div>
             </main>
