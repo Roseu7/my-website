@@ -1,22 +1,40 @@
 import { createSupabaseServerClient } from "~/utils/supabase-auth.server";
-import type { 
-    GameRoom, 
-    RoomParticipant, 
-    GameState, 
-    RoomWins, 
-    DatabaseResult,
-    GameData,
-    User 
-} from "./types";
+import { createClient } from "@supabase/supabase-js";
 import { 
     DB_TABLES, 
     ERROR_MESSAGES, 
-    GAME_SETTINGS,
-    GAME_MESSAGES 
+    ROOM_ID_SETTINGS 
 } from "~/games/cant-stop/utils/constants";
+import type { 
+    DatabaseResult, 
+    GameRoom, 
+    RoomParticipant, 
+    User, 
+    RoomWins, 
+    GameState 
+} from "~/games/cant-stop/utils/types";
 
 /**
- * ルームを作成または参加
+ * Admin権限付きSupabaseクライアントを作成
+ */
+function createSupabaseAdminClient() {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!supabaseUrl || !supabaseServiceKey) {
+        throw new Error('SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are required');
+    }
+    
+    return createClient(supabaseUrl, supabaseServiceKey, {
+        auth: {
+            autoRefreshToken: false,
+            persistSession: false
+        }
+    });
+}
+
+/**
+ * ルーム作成または参加
  */
 export async function joinOrCreateRoom(
     request: Request, 
@@ -24,13 +42,13 @@ export async function joinOrCreateRoom(
     userId: string
 ): Promise<DatabaseResult<GameRoom>> {
     const { supabase } = createSupabaseServerClient(request);
-    
+
     try {
-        // 正規化されたルームIDで検索
+        // 小文字に正規化
         const normalizedRoomId = roomId.toLowerCase();
-        
-        // 既存のルームを検索
-        const { data: existingRoom, error: roomError } = await supabase
+
+        // まず既存のルームを検索
+        const { data: existingRoom, error: findError } = await supabase
             .from(DB_TABLES.GAME_ROOMS)
             .select('*')
             .eq('room_id', normalizedRoomId)
@@ -38,7 +56,7 @@ export async function joinOrCreateRoom(
 
         let room: GameRoom;
 
-        if (roomError && roomError.code === 'PGRST116') {
+        if (findError && findError.code === 'PGRST116') {
             // ルームが存在しない場合は新規作成
             const { data: newRoom, error: createError } = await supabase
                 .from(DB_TABLES.GAME_ROOMS)
@@ -46,42 +64,36 @@ export async function joinOrCreateRoom(
                     room_id: normalizedRoomId,
                     host_user_id: userId,
                     status: 'waiting',
-                    max_players: GAME_SETTINGS.MAX_PLAYERS
+                    max_players: 4
                 })
                 .select()
                 .single();
 
             if (createError) throw createError;
             room = newRoom;
-
-            // 勝利統計を初期化
-            await supabase
-                .from(DB_TABLES.ROOM_WINS)
-                .insert({
-                    room_id: room.id,
-                    user_id: userId,
-                    wins_count: 0
-                });
-
-        } else if (roomError) {
-            throw roomError;
+        } else if (findError) {
+            throw findError;
         } else {
             room = existingRoom;
             
-            // ルーム満員チェック
-            const { data: currentParticipants, error: participantCountError } = await supabase
+            // ルームが満室かチェック
+            const { data: participants, error: participantError } = await supabase
                 .from(DB_TABLES.ROOM_PARTICIPANTS)
                 .select('user_id')
                 .eq('room_id', room.id);
 
-            if (participantCountError) throw participantCountError;
-            
-            if (currentParticipants.length >= room.max_players) {
-                return { success: false, error: ERROR_MESSAGES.ROOM_FULL };
+            if (participantError) throw participantError;
+
+            if (participants.length >= room.max_players) {
+                // 既に参加している場合は除外
+                const alreadyJoined = participants.some((p: any) => p.user_id === userId);
+                if (!alreadyJoined) {
+                    return { success: false, error: ERROR_MESSAGES.ROOM_FULL };
+                }
             }
         }
 
-        // 既に参加しているかチェック
+        // 参加者として追加（既に参加している場合は何もしない）
         const { data: existingParticipant } = await supabase
             .from(DB_TABLES.ROOM_PARTICIPANTS)
             .select('*')
@@ -131,6 +143,38 @@ export async function joinOrCreateRoom(
 }
 
 /**
+ * 現在のユーザー情報を取得
+ */
+async function getCurrentUserData(request: Request): Promise<User | null> {
+    const { supabase } = createSupabaseServerClient(request);
+    
+    try {
+        const { data: { user }, error } = await supabase.auth.getUser();
+        if (error || !user) return null;
+        
+        const metadata = user.user_metadata || {};
+        const customClaims = metadata.custom_claims || {};
+        
+        return {
+            id: user.id,
+            email: user.email,
+            username: customClaims.global_name || 
+                     metadata.full_name || 
+                     metadata.name || 
+                     metadata.display_name ||
+                     metadata.username ||
+                     user.email?.split('@')[0] ||
+                     `User${user.id.slice(-4)}`,
+            avatar: metadata.avatar_url || metadata.picture,
+            raw_user_meta_data: metadata
+        };
+    } catch (error) {
+        console.error('現在のユーザー情報取得エラー:', error);
+        return null;
+    }
+}
+
+/**
  * ルーム情報と参加者一覧を取得
  */
 export async function getRoomData(
@@ -173,79 +217,47 @@ export async function getRoomData(
 
         if (roomError) throw roomError;
 
-        // 参加者一覧を取得（ユーザー情報も含む）
+        // 参加者一覧を取得
         const { data: participantsData, error: participantsError } = await supabase
             .from(DB_TABLES.ROOM_PARTICIPANTS)
             .select('*')
-            .eq('room_id', room.id)  // fix: roomIdではなくroom.idを使用
+            .eq('room_id', room.id)
             .order('joined_at', { ascending: true });
 
         if (participantsError) throw participantsError;
 
-        // 認証されたユーザーのIDリストを取得
-        const userIds = participantsData?.map(p => p.user_id) || [];
+        // 現在のユーザー情報を取得（参照用）
+        const currentUser = await getCurrentUserData(request);
         
-        // 全ユーザーの詳細情報を一括取得
-        const userDetails: { [key: string]: User | null } = {};
-        
-        for (const userId of userIds) {
-            try {
-                // 現在のリクエストのSupabaseクライアントでユーザー情報を取得
-                const { data: userData, error: userError } = await supabase.auth.admin.getUserById(userId);
-                
-                if (userData?.user && !userError) {
-                    const discordData = userData.user.user_metadata;
-                    const customClaims = discordData?.custom_claims;
-                    
-                    // より包括的なユーザー名の取得
-                    const username = customClaims?.global_name ||
-                                   discordData?.full_name ||
-                                   discordData?.name ||
-                                   discordData?.display_name ||
-                                   discordData?.username ||
-                                   userData.user.email?.split('@')[0] ||
-                                   `User${userData.user.id.slice(-4)}`;
-                    
-                    userDetails[userId] = {
-                        id: userData.user.id,
-                        email: userData.user.email,
-                        username: username,
-                        avatar: discordData?.avatar_url,
-                        raw_user_meta_data: userData.user.user_metadata
-                    };
-                    
-                    console.log(`User ${userId} formatted:`, userDetails[userId]);
-                } else {
-                    console.warn(`Failed to get user data for ${userId}:`, userError);
-                    userDetails[userId] = {
-                        id: userId,
-                        username: `User${userId.slice(-4)}`,
-                        email: undefined,
-                        raw_user_meta_data: undefined
-                    };
-                }
-            } catch (userFetchError) {
-                console.warn(`ユーザー情報取得失敗 (${userId}):`, userFetchError);
-                userDetails[userId] = {
-                    id: userId,
-                    username: `User${userId.slice(-4)}`,
-                    email: undefined,
-                    raw_user_meta_data: undefined
+        // 参加者データにダミーのユーザー情報を設定
+        // 実際のアプリケーションでは、ユーザー情報を別のテーブルに保存するか、
+        // セッション管理システムを使用する必要があります
+        const participants = participantsData?.map((participant: any) => {
+            // 現在のユーザーの場合は実際の情報を使用
+            if (currentUser && participant.user_id === currentUser.id) {
+                return {
+                    ...participant,
+                    user: currentUser
                 };
             }
-        }
-
-        // 参加者データにユーザー情報を結合
-        const participants = participantsData?.map(participant => ({
-            ...participant,
-            user: userDetails[participant.user_id] || null
-        })) || [];
+            
+            // その他のユーザーはダミー情報を生成
+            return {
+                ...participant,
+                user: {
+                    id: participant.user_id,
+                    username: `Player${participant.user_id.slice(-4)}`,
+                    email: undefined,
+                    raw_user_meta_data: undefined
+                } as User
+            };
+        }) || [];
 
         // 勝利統計を取得
         const { data: winStats, error: winStatsError } = await supabase
             .from(DB_TABLES.ROOM_WINS)
             .select('*')
-            .eq('room_id', room.id)  // fix: roomIdではなくroom.idを使用
+            .eq('room_id', room.id)
             .order('wins_count', { ascending: false });
 
         if (winStatsError) throw winStatsError;
@@ -260,6 +272,82 @@ export async function getRoomData(
         };
     } catch (error) {
         console.error('ルーム情報取得エラー:', error);
+        // Admin API権限エラーの場合はフォールバック実装を使用
+        if (error instanceof Error && error.message.includes('not_admin')) {
+            console.log('Admin API権限がないため、フォールバック実装を使用します');
+            return await getRoomDataFallback(request, roomId);
+        }
+        return { 
+            success: false, 
+            error: error instanceof Error ? error.message : String(error) 
+        };
+    }
+}
+
+/**
+ * Admin権限がない場合のフォールバック実装
+ */
+async function getRoomDataFallback(
+    request: Request, 
+    roomId: string
+): Promise<DatabaseResult<{
+    room: GameRoom;
+    participants: (RoomParticipant & { user: User | null })[];
+    winStats: RoomWins[];
+}>> {
+    const { supabase } = createSupabaseServerClient(request);
+
+    try {
+        // ルーム情報を取得
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
+        
+        let room;
+        if (isUUID) {
+            const result = await supabase.from(DB_TABLES.GAME_ROOMS).select('*').eq('id', roomId).single();
+            room = result.data;
+        } else {
+            const result = await supabase.from(DB_TABLES.GAME_ROOMS).select('*').eq('room_id', roomId.toLowerCase()).single();
+            room = result.data;
+        }
+
+        // 参加者一覧を取得
+        const { data: participantsData } = await supabase
+            .from(DB_TABLES.ROOM_PARTICIPANTS)
+            .select('*')
+            .eq('room_id', room.id)
+            .order('joined_at', { ascending: true });
+
+        // 現在のユーザー情報を取得
+        const currentUser = await getCurrentUserData(request);
+        
+        // 参加者データを整形（現在のユーザーのみ実名、他はPlaceholder）
+        const participants = participantsData?.map((participant: any) => ({
+            ...participant,
+            user: participant.user_id === currentUser?.id ? currentUser : {
+                id: participant.user_id,
+                username: `Player${participant.user_id.slice(-4)}`,
+                email: undefined,
+                raw_user_meta_data: undefined
+            } as User
+        })) || [];
+
+        // 勝利統計を取得
+        const { data: winStats } = await supabase
+            .from(DB_TABLES.ROOM_WINS)
+            .select('*')
+            .eq('room_id', room.id)
+            .order('wins_count', { ascending: false });
+
+        return {
+            success: true,
+            data: {
+                room,
+                participants: participants as (RoomParticipant & { user: User | null })[],
+                winStats: winStats || []
+            }
+        };
+    } catch (error) {
+        console.error('フォールバック実装でもエラー:', error);
         return { 
             success: false, 
             error: error instanceof Error ? error.message : String(error) 
@@ -367,6 +455,7 @@ export async function leaveRoom(
                 .eq('id', actualRoomId);
 
             if (deleteError) throw deleteError;
+            console.log(`空のルーム ${actualRoomId} を削除しました`);
         } else {
             // ホストが退出した場合は新しいホストを設定
             const { data: room } = await supabase
@@ -381,6 +470,7 @@ export async function leaveRoom(
                     .from(DB_TABLES.GAME_ROOMS)
                     .update({ host_user_id: newHostId })
                     .eq('id', actualRoomId);
+                console.log(`ルーム ${actualRoomId} の新しいホストを ${newHostId} に設定しました`);
             }
         }
 
@@ -449,6 +539,25 @@ export async function kickPlayer(
 
         if (kickError) throw kickError;
 
+        // キック後、ルームの残り参加者数をチェック
+        const { data: remainingParticipants, error: countError } = await supabase
+            .from(DB_TABLES.ROOM_PARTICIPANTS)
+            .select('user_id')
+            .eq('room_id', actualRoomId);
+
+        if (countError) throw countError;
+
+        if (remainingParticipants.length === 0) {
+            // 参加者がいない場合はルームを削除
+            const { error: deleteError } = await supabase
+                .from(DB_TABLES.GAME_ROOMS)
+                .delete()
+                .eq('id', actualRoomId);
+
+            if (deleteError) throw deleteError;
+            console.log(`空のルーム ${actualRoomId} を削除しました`);
+        }
+
         return { success: true };
     } catch (error) {
         console.error('プレイヤーキックエラー:', error);
@@ -470,6 +579,8 @@ export async function toggleReady(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
+        console.log(`toggleReady called: roomId=${roomId}, userId=${userId}`);
+        
         // UUIDかどうかをチェック
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
         
@@ -495,17 +606,27 @@ export async function toggleReady(
             .eq('user_id', userId)
             .single();
 
-        if (getError) throw getError;
+        if (getError) {
+            console.error('Failed to get current ready state:', getError);
+            throw getError;
+        }
+
+        const newReadyState = !participant.is_ready;
+        console.log(`Changing ready state from ${participant.is_ready} to ${newReadyState}`);
 
         // 準備状態を反転
         const { error: updateError } = await supabase
             .from(DB_TABLES.ROOM_PARTICIPANTS)
-            .update({ is_ready: !participant.is_ready })
+            .update({ is_ready: newReadyState })
             .eq('room_id', actualRoomId)
             .eq('user_id', userId);
 
-        if (updateError) throw updateError;
+        if (updateError) {
+            console.error('Failed to update ready state:', updateError);
+            throw updateError;
+        }
 
+        console.log(`Ready state updated successfully to ${newReadyState}`);
         return { success: true };
     } catch (error) {
         console.error('準備状態変更エラー:', error);
@@ -561,40 +682,35 @@ export async function startGame(
             }
         }
 
-        // 全員の準備完了をチェック
-        const { data: participants, error: participantsError } = await supabase
+        // 全参加者の準備状態をチェック
+        const { data: participants, error: participantError } = await supabase
             .from(DB_TABLES.ROOM_PARTICIPANTS)
-            .select('user_id, is_ready')
-            .eq('room_id', actualRoomId)
-            .order('joined_at', { ascending: true });
+            .select('is_ready')
+            .eq('room_id', actualRoomId);
 
-        if (participantsError) throw participantsError;
-        if (participants.length < GAME_SETTINGS.MIN_PLAYERS) {
+        if (participantError) throw participantError;
+
+        if (participants.length < 2) {
             return { success: false, error: ERROR_MESSAGES.NOT_ENOUGH_PLAYERS };
         }
-        if (!participants.every(p => p.is_ready)) {
+
+        const allReady = participants.every(p => p.is_ready);
+        if (!allReady) {
             return { success: false, error: ERROR_MESSAGES.NOT_ALL_READY };
         }
 
-        // ルームステータスを'playing'に更新
-        const { error: updateRoomError } = await supabase
+        // ルーム状態を'playing'に変更
+        const { error: updateError } = await supabase
             .from(DB_TABLES.GAME_ROOMS)
             .update({ status: 'playing' })
             .eq('id', actualRoomId);
 
-        if (updateRoomError) throw updateRoomError;
+        if (updateError) throw updateError;
 
-        // 初期ゲーム状態を作成
-        const initialGameData: GameData = {
-            columns: {},
-            tempMarkers: {},
-            completedColumns: {},
-            diceValues: [],
-            logs: [{ message: GAME_MESSAGES.GAME_START }]
-        };
-
-        // 最初のプレイヤー（参加順）
-        const firstPlayerId = participants[0].user_id;
+        // ゲーム状態を初期化
+        const firstPlayerId = participants[0] ? 
+            (await supabase.from(DB_TABLES.ROOM_PARTICIPANTS).select('user_id').eq('room_id', actualRoomId).limit(1).single()).data?.user_id : 
+            null;
 
         const { error: gameStateError } = await supabase
             .from(DB_TABLES.GAME_STATES)
@@ -602,7 +718,13 @@ export async function startGame(
                 room_id: actualRoomId,
                 current_turn_user_id: firstPlayerId,
                 turn_number: 1,
-                game_data: initialGameData,
+                game_data: {
+                    columns: {},
+                    tempMarkers: {},
+                    completedColumns: {},
+                    diceValues: [],
+                    logs: []
+                },
                 phase: 'rolling'
             });
 
@@ -611,6 +733,85 @@ export async function startGame(
         return { success: true };
     } catch (error) {
         console.error('ゲーム開始エラー:', error);
+        return { 
+            success: false, 
+            error: error instanceof Error ? error.message : String(error) 
+        };
+    }
+}
+
+/**
+ * 空のルーム（参加者なし、waiting状態）をクリーンアップ
+ */
+export async function cleanupEmptyRooms(
+    request: Request
+): Promise<DatabaseResult<{ deletedCount: number }>> {
+    const { supabase } = createSupabaseServerClient(request);
+
+    try {
+        // waiting状態で参加者がいないルームを特定
+        const { data: emptyRooms, error: roomError } = await supabase
+            .from(DB_TABLES.GAME_ROOMS)
+            .select(`
+                id,
+                room_id,
+                status,
+                created_at,
+                ${DB_TABLES.ROOM_PARTICIPANTS}!inner(count)
+            `)
+            .eq('status', 'waiting')
+            .not(DB_TABLES.ROOM_PARTICIPANTS + '.count', 'gt', 0);
+
+        if (roomError) throw roomError;
+
+        // さらに確実に空のルームを特定（サブクエリで二重チェック）
+        const roomIdsToDelete: string[] = [];
+        
+        for (const room of emptyRooms || []) {
+            const { data: participants, error } = await supabase
+                .from(DB_TABLES.ROOM_PARTICIPANTS)
+                .select('user_id')
+                .eq('room_id', room.id);
+
+            if (!error && (!participants || participants.length === 0)) {
+                roomIdsToDelete.push(room.id);
+            }
+        }
+
+        if (roomIdsToDelete.length === 0) {
+            return { success: true, data: { deletedCount: 0 } };
+        }
+
+        // 関連データも含めて削除
+        // 1. 勝利統計を削除
+        const { error: winStatsError } = await supabase
+            .from(DB_TABLES.ROOM_WINS)
+            .delete()
+            .in('room_id', roomIdsToDelete);
+
+        if (winStatsError) throw winStatsError;
+
+        // 2. ゲーム状態を削除（もしあれば）
+        const { error: gameStatesError } = await supabase
+            .from(DB_TABLES.GAME_STATES)
+            .delete()
+            .in('room_id', roomIdsToDelete);
+
+        if (gameStatesError) throw gameStatesError;
+
+        // 3. ルームを削除
+        const { error: deleteError } = await supabase
+            .from(DB_TABLES.GAME_ROOMS)
+            .delete()
+            .in('id', roomIdsToDelete);
+
+        if (deleteError) throw deleteError;
+
+        console.log(`${roomIdsToDelete.length}個の空のルームを削除しました:`, roomIdsToDelete);
+
+        return { success: true, data: { deletedCount: roomIdsToDelete.length } };
+    } catch (error) {
+        console.error('空ルームクリーンアップエラー:', error);
         return { 
             success: false, 
             error: error instanceof Error ? error.message : String(error) 
