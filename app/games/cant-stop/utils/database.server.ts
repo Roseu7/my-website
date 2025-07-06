@@ -1,4 +1,5 @@
 import { createSupabaseServerClient } from "~/utils/supabase-auth.server";
+import { createClient } from "@supabase/supabase-js";
 import type { 
     GameRoom, 
     RoomParticipant, 
@@ -8,6 +9,30 @@ import type {
     DatabaseResult 
 } from "~/games/cant-stop/utils/types";
 import { DB_TABLES } from "~/games/cant-stop/utils/constants";
+
+/**
+ * Admin権限でのSupabaseクライアントを作成
+ */
+function createSupabaseAdminClient() {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!supabaseUrl || !supabaseServiceKey) {
+        return null;
+    }
+    
+    try {
+        return createClient(supabaseUrl, supabaseServiceKey, {
+            auth: {
+                autoRefreshToken: false,
+                persistSession: false
+            }
+        });
+    } catch (error) {
+        console.error('Failed to create admin client:', error);
+        return null;
+    }
+}
 
 /**
  * 現在のユーザー情報を取得
@@ -38,250 +63,6 @@ async function getCurrentUserData(request: Request): Promise<User | null> {
     } catch (error) {
         console.error('現在のユーザー情報取得エラー:', error);
         return null;
-    }
-}
-
-/**
- * 参加者のユーザー情報を取得（セッションベース + Discord API）
- */
-async function getUsersByIds(supabase: any, userIds: string[], currentUser: User | null): Promise<{ [key: string]: User }> {
-    const userMap: { [key: string]: User } = {};
-    
-    try {
-        for (const userId of userIds) {
-            if (currentUser && userId === currentUser.id) {
-                // 現在のユーザーは実際の情報を使用
-                userMap[userId] = currentUser;
-            } else {
-                // 他のユーザー：まずDiscord User IDを使って情報を構築
-                try {
-                    // まずauth.usersから基本情報を取得してみる
-                    const { data: authUser, error } = await supabase.auth.admin.getUserById(userId);
-                    
-                    if (!error && authUser?.user) {
-                        const user = authUser.user;
-                        const metadata = user.user_metadata || {};
-                        const customClaims = metadata.custom_claims || {};
-                        
-                        userMap[userId] = {
-                            id: user.id,
-                            email: user.email,
-                            username: customClaims.global_name || 
-                                     metadata.full_name || 
-                                     metadata.name || 
-                                     metadata.display_name ||
-                                     metadata.username ||
-                                     user.email?.split('@')[0] ||
-                                     `Player${user.id.slice(-4)}`,
-                            avatar: metadata.avatar_url || metadata.picture || `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
-                            raw_user_meta_data: metadata
-                        };
-                    } else {
-                        // Auth APIでデータ取得できない場合はフォールバック
-                        userMap[userId] = {
-                            id: userId,
-                            username: `Player${userId.slice(-4)}`,
-                            email: undefined,
-                            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
-                            raw_user_meta_data: undefined
-                        };
-                    }
-                } catch (userError) {
-                    console.warn(`個別ユーザー取得エラー: ${userId}`, userError);
-                    // エラー時もフォールバック情報を設定
-                    userMap[userId] = {
-                        id: userId,
-                        username: `Player${userId.slice(-4)}`,
-                        email: undefined,
-                        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
-                        raw_user_meta_data: undefined
-                    };
-                }
-            }
-        }
-    } catch (error) {
-        console.error('ユーザー情報取得エラー:', error);
-        // エラー時も全ユーザーにフォールバック情報を設定
-        userIds.forEach(userId => {
-            if (currentUser && userId === currentUser.id) {
-                userMap[userId] = currentUser;
-            } else {
-                userMap[userId] = {
-                    id: userId,
-                    username: `Player${userId.slice(-4)}`,
-                    email: undefined,
-                    avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
-                    raw_user_meta_data: undefined
-                };
-            }
-        });
-    }
-    
-    return userMap;
-}
-
-/**
- * ルーム情報と参加者一覧を取得
- */
-export async function getRoomData(
-    request: Request, 
-    roomId: string
-): Promise<DatabaseResult<{
-    room: GameRoom;
-    participants: (RoomParticipant & { user: User | null })[];
-    winStats: RoomWins[];
-}>> {
-    const { supabase } = createSupabaseServerClient(request);
-
-    try {
-        // ルーム情報を取得（room_idかidかを判別）
-        let room;
-        let roomError;
-        
-        // UUIDかどうかをチェック
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
-        
-        if (isUUID) {
-            // UUIDの場合はidで検索
-            const result = await supabase
-                .from(DB_TABLES.GAME_ROOMS)
-                .select('*')
-                .eq('id', roomId)
-                .single();
-            room = result.data;
-            roomError = result.error;
-        } else {
-            // 文字列の場合はroom_idで検索
-            const result = await supabase
-                .from(DB_TABLES.GAME_ROOMS)
-                .select('*')
-                .eq('room_id', roomId.toLowerCase())
-                .single();
-            room = result.data;
-            roomError = result.error;
-        }
-
-        if (roomError) throw roomError;
-
-        // 参加者一覧を取得
-        const { data: participantsData, error: participantsError } = await supabase
-            .from(DB_TABLES.ROOM_PARTICIPANTS)
-            .select('*')
-            .eq('room_id', room.id)
-            .order('joined_at', { ascending: true });
-
-        if (participantsError) throw participantsError;
-
-        // 参加者のユーザーIDリストを取得
-        const userIds = participantsData?.map((p: any) => p.user_id) || [];
-        
-        // 現在のユーザー情報を取得
-        const currentUser = await getCurrentUserData(request);
-        
-        // ユーザー情報を取得（セッションベース）
-        const userMap = await getUsersByIds(supabase, userIds, currentUser);
-        
-        // 参加者データにユーザー情報を結合
-        const participants = participantsData?.map((participant: any) => ({
-            ...participant,
-            user: userMap[participant.user_id] || null
-        })) || [];
-
-        // 勝利統計を取得
-        const { data: winStats, error: winStatsError } = await supabase
-            .from(DB_TABLES.ROOM_WINS)
-            .select('*')
-            .eq('room_id', room.id)
-            .order('wins_count', { ascending: false });
-
-        if (winStatsError) throw winStatsError;
-
-        return {
-            success: true,
-            data: {
-                room,
-                participants: participants as (RoomParticipant & { user: User | null })[],
-                winStats: winStats || []
-            }
-        };
-    } catch (error) {
-        console.error('ルーム情報取得エラー:', error);
-        
-        // 常にフォールバック実装を使用（Admin権限が不要）
-        console.log('フォールバック実装を使用します');
-        return await getRoomDataFallback(request, roomId);
-    }
-}
-
-/**
- * Admin権限がない場合のフォールバック実装
- */
-async function getRoomDataFallback(
-    request: Request, 
-    roomId: string
-): Promise<DatabaseResult<{
-    room: GameRoom;
-    participants: (RoomParticipant & { user: User | null })[];
-    winStats: RoomWins[];
-}>> {
-    const { supabase } = createSupabaseServerClient(request);
-
-    try {
-        // ルーム情報を取得
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
-        
-        let room;
-        if (isUUID) {
-            const result = await supabase.from(DB_TABLES.GAME_ROOMS).select('*').eq('id', roomId).single();
-            room = result.data;
-        } else {
-            const result = await supabase.from(DB_TABLES.GAME_ROOMS).select('*').eq('room_id', roomId.toLowerCase()).single();
-            room = result.data;
-        }
-
-        // 参加者一覧を取得
-        const { data: participantsData } = await supabase
-            .from(DB_TABLES.ROOM_PARTICIPANTS)
-            .select('*')
-            .eq('room_id', room.id)
-            .order('joined_at', { ascending: true });
-
-        // 現在のユーザー情報を取得
-        const currentUser = await getCurrentUserData(request);
-        
-        // 参加者データを整形（現在のユーザーのみ実名、他は一意のプレースホルダー）
-        const participants = participantsData?.map((participant: any) => ({
-            ...participant,
-            user: participant.user_id === currentUser?.id ? currentUser : {
-                id: participant.user_id,
-                username: `Player${participant.user_id.slice(-4)}`,
-                email: undefined,
-                avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${participant.user_id}`,
-                raw_user_meta_data: undefined
-            } as User
-        })) || [];
-
-        // 勝利統計を取得
-        const { data: winStats } = await supabase
-            .from(DB_TABLES.ROOM_WINS)
-            .select('*')
-            .eq('room_id', room.id)
-            .order('wins_count', { ascending: false });
-
-        return {
-            success: true,
-            data: {
-                room,
-                participants: participants as (RoomParticipant & { user: User | null })[],
-                winStats: winStats || []
-            }
-        };
-    } catch (error) {
-        console.error('フォールバック実装でもエラー:', error);
-        return { 
-            success: false, 
-            error: error instanceof Error ? error.message : String(error) 
-        };
     }
 }
 
@@ -378,6 +159,252 @@ export async function joinOrCreateRoom(
         return { 
             success: false, 
             error: error instanceof Error ? error.message : String(error) 
+        };
+    }
+}
+
+/**
+ * セッションベースで他のユーザー情報を取得
+ */
+async function getUsersByIdsFromSession(request: Request, userIds: string[], currentUser: User | null): Promise<{ [key: string]: User }> {
+    const userMap: { [key: string]: User } = {};
+    
+    try {
+        // Admin クライアントを作成
+        const adminClient = createSupabaseAdminClient();
+        
+        if (!adminClient) {
+            return await getUsersByIdsFromProfiles(request, userIds, currentUser);
+        }
+        
+        // 各ユーザーIDに対して情報を設定
+        for (const userId of userIds) {
+            if (currentUser && userId === currentUser.id) {
+                // 現在のユーザーは実際の情報を使用
+                userMap[userId] = currentUser;
+            } else {
+                // 他のユーザー：Admin権限でauth.usersから取得
+                try {
+                    const { data: authData, error } = await adminClient.auth.admin.getUserById(userId);
+                    
+                    if (!error && authData?.user) {
+                        const user = authData.user;
+                        const metadata = user.user_metadata || {};
+                        const customClaims = metadata.custom_claims || {};
+                        
+                        userMap[userId] = {
+                            id: userId,
+                            username: customClaims.global_name || 
+                                     metadata.full_name || 
+                                     metadata.name || 
+                                     metadata.display_name ||
+                                     metadata.username ||
+                                     user.email?.split('@')[0] ||
+                                     `Player${userId.slice(-4)}`,
+                            avatar: metadata.avatar_url || metadata.picture,
+                            email: user.email,
+                            raw_user_meta_data: metadata
+                        };
+                    } else {
+                        throw new Error(`Admin auth failed: ${error?.message}`);
+                    }
+                } catch (adminError) {
+                    // Admin権限が使えない場合のフォールバック：プロファイルテーブルから取得
+                    const fallbackData = await getUsersByIdsFromProfiles(request, [userId], null);
+                    if (fallbackData[userId]) {
+                        userMap[userId] = fallbackData[userId];
+                    } else {
+                        // 最終フォールバック
+                        userMap[userId] = {
+                            id: userId,
+                            username: `Player${userId.slice(-4)}`,
+                            email: undefined,
+                            avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
+                            raw_user_meta_data: undefined
+                        };
+                    }
+                }
+            }
+        }
+    } catch (error) {
+        console.error('ユーザー情報取得エラー:', error);
+        
+        // エラーの場合は全てフォールバック
+        for (const userId of userIds) {
+            if (currentUser && userId === currentUser.id) {
+                userMap[userId] = currentUser;
+            } else {
+                userMap[userId] = {
+                    id: userId,
+                    username: `Player${userId.slice(-4)}`,
+                    email: undefined,
+                    avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
+                    raw_user_meta_data: undefined
+                };
+            }
+        }
+    }
+    
+    return userMap;
+}
+
+/**
+ * プロファイルテーブルからユーザー情報を取得（フォールバック用）
+ */
+async function getUsersByIdsFromProfiles(request: Request, userIds: string[], currentUser: User | null): Promise<{ [key: string]: User }> {
+    const userMap: { [key: string]: User } = {};
+    const { supabase } = createSupabaseServerClient(request);
+    
+    try {
+        // プロファイルテーブルからユーザー情報を取得
+        const { data: profiles, error } = await supabase
+            .from('profiles')
+            .select('id, username, avatar_url')
+            .in('id', userIds);
+        
+        if (error) {
+            console.error('プロファイル取得エラー:', error);
+        }
+        
+        // 各ユーザーIDに対して情報を設定
+        for (const userId of userIds) {
+            if (currentUser && userId === currentUser.id) {
+                // 現在のユーザーは実際の情報を使用
+                userMap[userId] = currentUser;
+            } else {
+                // プロファイルテーブルから取得した情報を使用
+                const profile = profiles?.find((p: { id: string; username: string; avatar_url: string }) => p.id === userId);
+                if (profile && profile.username) {
+                    userMap[userId] = {
+                        id: userId,
+                        username: profile.username,
+                        avatar: profile.avatar_url,
+                        email: undefined,
+                        raw_user_meta_data: undefined
+                    };
+                } else {
+                    // プロファイルが見つからない場合のフォールバック
+                    userMap[userId] = {
+                        id: userId,
+                        username: `Player${userId.slice(-4)}`,
+                        email: undefined,
+                        avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
+                        raw_user_meta_data: undefined
+                    };
+                }
+            }
+        }
+    } catch (error) {
+        console.error('プロファイル取得エラー:', error);
+        
+        // エラーの場合は全てフォールバック
+        for (const userId of userIds) {
+            if (currentUser && userId === currentUser.id) {
+                userMap[userId] = currentUser;
+            } else {
+                userMap[userId] = {
+                    id: userId,
+                    username: `Player${userId.slice(-4)}`,
+                    email: undefined,
+                    avatar: `https://api.dicebear.com/7.x/avataaars/svg?seed=${userId}`,
+                    raw_user_meta_data: undefined
+                };
+            }
+        }
+    }
+    
+    return userMap;
+}
+
+/**
+ * ルーム情報と参加者一覧を取得
+ */
+export async function getRoomData(
+    request: Request, 
+    roomId: string
+): Promise<DatabaseResult<{
+    room: GameRoom;
+    participants: (RoomParticipant & { user: User | null })[];
+    winStats: RoomWins[];
+}>> {
+    const { supabase } = createSupabaseServerClient(request);
+
+    try {
+        // ルーム情報を取得（room_idかidかを判別）
+        let room;
+        let roomError;
+        
+        // UUIDかどうかをチェック
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
+        
+        if (isUUID) {
+            // UUIDの場合はidで検索
+            const result = await supabase
+                .from(DB_TABLES.GAME_ROOMS)
+                .select('*')
+                .eq('id', roomId)
+                .single();
+            room = result.data;
+            roomError = result.error;
+        } else {
+            // 文字列の場合はroom_idで検索
+            const result = await supabase
+                .from(DB_TABLES.GAME_ROOMS)
+                .select('*')
+                .eq('room_id', roomId.toLowerCase())
+                .single();
+            room = result.data;
+            roomError = result.error;
+        }
+
+        if (roomError) throw roomError;
+
+        // 参加者一覧を取得
+        const { data: participantsData, error: participantsError } = await supabase
+            .from(DB_TABLES.ROOM_PARTICIPANTS)
+            .select('*')
+            .eq('room_id', room.id)
+            .order('joined_at', { ascending: true });
+
+        if (participantsError) throw participantsError;
+
+        // 参加者のユーザーIDリストを取得
+        const userIds = participantsData?.map((p: RoomParticipant) => p.user_id) || [];
+        
+        // 現在のユーザー情報を取得
+        const currentUser = await getCurrentUserData(request);
+        
+        // セッションベースでユーザー情報を取得
+        const userMap = await getUsersByIdsFromSession(request, userIds, currentUser);
+        
+        // 参加者データにユーザー情報を結合
+        const participants = participantsData?.map((participant: RoomParticipant) => ({
+            ...participant,
+            user: userMap[participant.user_id] || null
+        })) || [];
+
+        // 勝利統計を取得
+        const { data: winStats, error: winStatsError } = await supabase
+            .from(DB_TABLES.ROOM_WINS)
+            .select('*')
+            .eq('room_id', room.id)
+            .order('wins_count', { ascending: false });
+
+        if (winStatsError) throw winStatsError;
+
+        return {
+            success: true,
+            data: {
+                room,
+                participants: participants as (RoomParticipant & { user: User | null })[],
+                winStats: winStats || []
+            }
+        };
+    } catch (error) {
+        console.error('ルーム情報取得エラー:', error);
+        return { 
+            success: false, 
+            error: error instanceof Error ? error.message : String(error)
         };
     }
 }
@@ -640,3 +667,4 @@ async function getRoomUUID(supabase: any, roomId: string): Promise<string> {
     if (error) throw error;
     return room.id;
 }
+

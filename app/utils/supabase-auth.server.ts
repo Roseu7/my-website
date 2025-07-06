@@ -54,7 +54,6 @@ export async function getUserFromSession(request: Request): Promise<User | null>
         const { data: { user }, error } = await supabase.auth.getUser();
         
         if (error || !user) {
-            console.log('No user found or error:', error?.message);
             return null;
         }
 
@@ -80,7 +79,6 @@ export async function getUserFromSession(request: Request): Promise<User | null>
             discordId: discordData?.provider_id || undefined,
         };
         
-        console.log('User session data:', formattedUser);
         return formattedUser;
     } catch (error) {
         console.error("Error getting user from session:", error);
