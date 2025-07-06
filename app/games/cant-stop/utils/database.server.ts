@@ -318,6 +318,7 @@ async function getUsersByIdsFromProfiles(request: Request, userIds: string[], cu
 
 /**
  * ルーム情報と参加者一覧を取得
+ * roomIdまたはUUIDに対応
  */
 export async function getRoomData(
     request: Request, 
@@ -404,13 +405,14 @@ export async function getRoomData(
         console.error('ルーム情報取得エラー:', error);
         return { 
             success: false, 
-            error: error instanceof Error ? error.message : String(error)
+            error: error instanceof Error ? error.message : String(error) 
         };
     }
 }
 
 /**
- * ルームから退出
+ * ルームを離れる
+ * roomIdまたはUUIDに対応
  */
 export async function leaveRoom(
     request: Request,
@@ -420,7 +422,7 @@ export async function leaveRoom(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
-        const actualRoomId = await getRoomUUID(supabase, roomId);
+        const actualRoomId = await getRoomUUIDFromIdentifier(supabase, roomId);
 
         // 参加者から削除
         const { error: deleteError } = await supabase
@@ -431,22 +433,60 @@ export async function leaveRoom(
 
         if (deleteError) throw deleteError;
 
-        // 参加者が0人になった場合はルームを削除
+        // 残りの参加者数をチェック
         const { count } = await supabase
             .from(DB_TABLES.ROOM_PARTICIPANTS)
             .select('*', { count: 'exact' })
             .eq('room_id', actualRoomId);
 
+        // 参加者がいなくなった場合、ルームを削除
         if (count === 0) {
+            // ゲーム状態を削除
+            await supabase
+                .from(DB_TABLES.GAME_STATES)
+                .delete()
+                .eq('room_id', actualRoomId);
+
+            // 勝利統計を削除
+            await supabase
+                .from(DB_TABLES.ROOM_WINS)
+                .delete()
+                .eq('room_id', actualRoomId);
+
+            // ルームを削除
             await supabase
                 .from(DB_TABLES.GAME_ROOMS)
                 .delete()
                 .eq('id', actualRoomId);
+        } else {
+            // ホストが離れた場合、次の参加者をホストにする
+            const { data: room } = await supabase
+                .from(DB_TABLES.GAME_ROOMS)
+                .select('host_user_id')
+                .eq('id', actualRoomId)
+                .single();
+
+            if (room?.host_user_id === userId) {
+                const { data: nextHost } = await supabase
+                    .from(DB_TABLES.ROOM_PARTICIPANTS)
+                    .select('user_id')
+                    .eq('room_id', actualRoomId)
+                    .order('joined_at', { ascending: true })
+                    .limit(1)
+                    .single();
+
+                if (nextHost) {
+                    await supabase
+                        .from(DB_TABLES.GAME_ROOMS)
+                        .update({ host_user_id: nextHost.user_id })
+                        .eq('id', actualRoomId);
+                }
+            }
         }
 
         return { success: true };
     } catch (error) {
-        console.error('ルーム退出エラー:', error);
+        console.error('ルーム離脱エラー:', error);
         return { 
             success: false, 
             error: error instanceof Error ? error.message : String(error) 
@@ -456,6 +496,7 @@ export async function leaveRoom(
 
 /**
  * プレイヤーをキック
+ * roomIdまたはUUIDに対応
  */
 export async function kickPlayer(
     request: Request,
@@ -466,16 +507,18 @@ export async function kickPlayer(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
-        const actualRoomId = await getRoomUUID(supabase, roomId);
+        const actualRoomId = await getRoomUUIDFromIdentifier(supabase, roomId);
 
-        // ホスト権限を確認
-        const { data: room } = await supabase
+        // ホスト権限の確認
+        const { data: room, error: roomError } = await supabase
             .from(DB_TABLES.GAME_ROOMS)
             .select('host_user_id')
             .eq('id', actualRoomId)
             .single();
 
-        if (room?.host_user_id !== hostUserId) {
+        if (roomError) throw roomError;
+
+        if (room.host_user_id !== hostUserId) {
             return { success: false, error: "ホスト権限がありません" };
         }
 
@@ -490,7 +533,7 @@ export async function kickPlayer(
 
         return { success: true };
     } catch (error) {
-        console.error('キックエラー:', error);
+        console.error('プレイヤーキックエラー:', error);
         return { 
             success: false, 
             error: error instanceof Error ? error.message : String(error) 
@@ -500,6 +543,7 @@ export async function kickPlayer(
 
 /**
  * 準備状態を切り替え
+ * roomIdまたはUUIDに対応
  */
 export async function toggleReady(
     request: Request,
@@ -509,7 +553,7 @@ export async function toggleReady(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
-        const actualRoomId = await getRoomUUID(supabase, roomId);
+        const actualRoomId = await getRoomUUIDFromIdentifier(supabase, roomId);
 
         // 現在の準備状態を取得
         const { data: participant, error: getError } = await supabase
@@ -551,7 +595,7 @@ export async function startGame(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
-        const actualRoomId = await getRoomUUID(supabase, roomId);
+        const actualRoomId = await getRoomUUIDFromIdentifier(supabase, roomId); // ←修正
 
         // ホスト権限を確認
         const { data: room } = await supabase
@@ -618,6 +662,7 @@ export async function startGame(
 
 /**
  * ゲーム状態を取得
+ * roomIdまたはUUIDに対応
  */
 export async function getGameState(
     request: Request,
@@ -626,7 +671,8 @@ export async function getGameState(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
-        const actualRoomId = await getRoomUUID(supabase, roomId);
+        // room_idまたはUUIDからroom.idを取得
+        const actualRoomId = await getRoomUUIDFromIdentifier(supabase, roomId);
 
         const { data: gameState, error } = await supabase
             .from(DB_TABLES.GAME_STATES)
@@ -650,21 +696,23 @@ export async function getGameState(
 
 /**
  * roomIdからUUIDを取得するヘルパー関数
+ * すべての関数で統一して使用
  */
-async function getRoomUUID(supabase: any, roomId: string): Promise<string> {
-    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(roomId);
+async function getRoomUUIDFromIdentifier(supabase: any, identifier: string): Promise<string> {
+    const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(identifier);
     
     if (isUUID) {
-        return roomId;
+        // すでにUUIDの場合はそのまま返す
+        return identifier;
     }
     
+    // room_idから対応するUUIDを取得
     const { data: room, error } = await supabase
         .from(DB_TABLES.GAME_ROOMS)
         .select('id')
-        .eq('room_id', roomId.toLowerCase())
+        .eq('room_id', identifier.toLowerCase())
         .single();
         
     if (error) throw error;
     return room.id;
 }
-

@@ -61,13 +61,13 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
 
     // ゲーム中でない場合はロビーにリダイレクト
     if (room.status !== 'playing') {
-        return redirect(`/games/cant-stop/lobby/${roomId}`);
+        return redirect(`/games/cant-stop/lobby/${room.room_id}`);
     }
 
     // ゲーム状態を取得
     const gameStateResult = await getGameState(request, roomId);
     if (!gameStateResult.success || !gameStateResult.data) {
-        return redirect(`/games/cant-stop/lobby/${roomId}`);
+        return redirect(`/games/cant-stop/lobby/${room.room_id}`);
     }
 
     const gameState = gameStateResult.data;
@@ -132,11 +132,18 @@ export async function action({ request, params }: ActionFunctionArgs) {
     const formData = await request.formData();
     const action = formData.get("_action");
 
+    console.log('Game Action:', { action, roomId, userId: user.id }); // デバッグ用
+
     switch (action) {
         case "roll_dice": {
+            console.log('Rolling dice for user:', user.id); // デバッグ用
+            
             const result = await rollDice(request, roomId, user.id);
+            
+            console.log('Roll dice result:', result); // デバッグ用
+            
             if (!result.success) {
-                return json({ error: result.error });
+                return json({ error: result.error }, { status: 400 });
             }
             
             // バストの場合は特別な処理
@@ -150,59 +157,56 @@ export async function action({ request, params }: ActionFunctionArgs) {
             
             return json({ 
                 success: true, 
-                combinations: result.data?.combinations || [] 
+                combinations: result.data?.combinations || [],
+                diceValues: result.data?.diceValues || []
             });
         }
 
         case "choose_combination": {
             const combinationStr = formData.get("combination")?.toString();
             if (!combinationStr) {
-                return json({ error: "組み合わせが選択されていません" });
+                return json({ error: "組み合わせが選択されていません" }, { status: 400 });
             }
             
             try {
                 const combination = JSON.parse(combinationStr);
+                console.log('Choosing combination:', combination); // デバッグ用
+                
                 const result = await chooseCombination(request, roomId, user.id, combination);
                 
                 if (!result.success) {
-                    return json({ error: result.error });
+                    return json({ error: result.error }, { status: 400 });
                 }
                 
                 return json({ success: true });
             } catch (error) {
-                return json({ error: "不正な組み合わせです" });
+                console.error('Combination parsing error:', error);
+                return json({ error: "不正な組み合わせです" }, { status: 400 });
             }
         }
 
-        case "continue_game": {
+        case "continue": {
             const result = await continueGame(request, roomId, user.id);
-            if (!result.success) {
-                return json({ error: result.error });
-            }
             
-            // ゲーム終了の場合は結果画面にリダイレクト
-            if (result.data?.gameEnded) {
-                return redirect(`/games/cant-stop/result/${roomId}`);
+            if (!result.success) {
+                return json({ error: result.error }, { status: 400 });
             }
             
             return json({ success: true });
         }
 
-        case "stop_turn": {
+        case "stop": {
             const result = await stopTurn(request, roomId, user.id);
+            
             if (!result.success) {
-                return json({ error: result.error });
+                return json({ error: result.error }, { status: 400 });
             }
             
             return json({ success: true });
         }
-
-        case "exit_game":
-            // ゲームから退出してロビーに戻る
-            return redirect(`/games/cant-stop/lobby/${roomId}`);
 
         default:
-            return json({ error: "不正なアクションです" });
+            return json({ error: "不正なアクションです" }, { status: 400 });
     }
 }
 
@@ -234,7 +238,7 @@ export default function CantStopGame() {
 
     // リアルタイム通信の設定
     useEffect(() => {
-        const realtimeClient = createRealtimeClient(room.id);
+        const realtimeClient = createRealtimeClient(room.room_id);
 
         // ゲーム状態の変更を監視
         realtimeClient.subscribeToGame({
@@ -251,18 +255,18 @@ export default function CantStopGame() {
             },
             onGameEnded: (result: any) => {
                 // ゲーム終了時は結果画面に遷移
-                window.location.href = `/games/cant-stop/result/${room.id}`;
+                window.location.href = `/games/cant-stop/result/${room.room_id}`;
             },
             onConnectionStateChanged: (state: any) => {
                 setConnectionStatus(state.game === 'connected' ? 'connected' : 
-                                 state.game === 'error' ? 'error' : 'disconnected');
+                                state.game === 'error' ? 'error' : 'disconnected');
             }
         });
 
         return () => {
             realtimeClient.cleanup();
         };
-    }, [room.id, user.id]);
+    }, [room.room_id, user.id]);
 
     // ゲームデータの取得（安全なアクセス）
     const gameData: GameData = gameState?.game_data || {
@@ -283,7 +287,7 @@ export default function CantStopGame() {
         form.append("_action", "roll_dice");
         
         try {
-            const response = await fetch(`/games/cant-stop/game/${room.id}`, {
+            const response = await fetch(`/games/cant-stop/game/${room.room_id}`, {
                 method: "POST",
                 body: form
             });
@@ -297,6 +301,8 @@ export default function CantStopGame() {
                 } else {
                     setAvailableCombinations(result.combinations || []);
                 }
+            } else {
+                console.error('サイコロ振りエラー:', result.error);
             }
         } catch (error) {
             console.error('サイコロ振りエラー:', error);
@@ -319,7 +325,8 @@ export default function CantStopGame() {
         form.append("combination", JSON.stringify(selectedCombination));
         
         try {
-            const response = await fetch(`/games/cant-stop/game/${room.id}`, {
+            // 修正: room.idではなくroom.room_idを使用
+            const response = await fetch(`/games/cant-stop/game/${room.room_id}`, {
                 method: "POST",
                 body: form
             });
@@ -329,6 +336,8 @@ export default function CantStopGame() {
             if (result.success) {
                 setAvailableCombinations([]);
                 setSelectedCombination(null);
+            } else {
+                console.error('組み合わせ選択エラー:', result.error);
             }
         } catch (error) {
             console.error('組み合わせ選択エラー:', error);

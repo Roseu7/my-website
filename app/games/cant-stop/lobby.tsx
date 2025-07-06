@@ -54,7 +54,7 @@ export async function loader({ request, params }: LoaderFunctionArgs) {
     }
 
     if (room.status === 'playing') {
-        return redirect(`/games/cant-stop/game/${roomId}`);
+        return redirect(`/games/cant-stop/game/${room.room_id}`);
     }
 
     const isHost = room.host_user_id === user.id;
@@ -114,6 +114,14 @@ export async function action({ request, params }: ActionFunctionArgs) {
             if (!startResult.success) {
                 return json({ error: startResult.error });
             }
+            
+            // ゲーム開始後は room_id でリダイレクト（型安全にアクセス）
+            const roomDataResult = await getRoomData(request, roomId);
+            if (roomDataResult.success && roomDataResult.data) {
+                return redirect(`/games/cant-stop/game/${roomDataResult.data.room.room_id}`);
+            }
+            
+            // フォールバック: 元のroomIdを使用
             return redirect(`/games/cant-stop/game/${roomId}`);
         }
 
