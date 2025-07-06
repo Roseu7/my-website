@@ -71,7 +71,7 @@ export interface GameHistory {
 }
 
 // ゲームフェーズ（データベーススキーマに対応）
-export type GamePhase = 'rolling' | 'choosing' | 'deciding' | 'stopped' | 'busting';
+export type GamePhase = 'rolling' | 'choosing' | 'deciding' | 'stopped' | 'busting' | 'finished';
 
 // プレイヤー情報（ゲーム中）
 export interface Player {
@@ -131,32 +131,12 @@ export interface RealtimeEvent {
     type: 'participant_joined' | 'participant_left' | 'ready_changed' | 'game_started' | 'game_state_updated' | 'game_ended';
     data: any;
     userId?: string;
-    timestamp: string;
+    timestamp?: string;
 }
 
-// エラー型
-export interface DatabaseError {
-    success: false;
-    error: string | Error;
-}
-
-export interface DatabaseSuccess<T = any> {
-    success: true;
+// データベース操作結果
+export interface DatabaseResult<T = any> {
+    success: boolean;
     data?: T;
-}
-
-export type DatabaseResult<T = any> = DatabaseSuccess<T> | DatabaseError;
-
-// Supabase特有の型
-export interface SupabaseUser {
-    id: string;
-    email?: string;
-    user_metadata?: {
-        full_name?: string;
-        name?: string;
-        avatar_url?: string;
-        custom_claims?: {
-            global_name?: string;
-        };
-    };
+    error?: string;
 }

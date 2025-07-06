@@ -1,31 +1,46 @@
 import { useState, useEffect } from "react";
 import { Form } from "@remix-run/react";
-import { calculateDiceCombinations } from "~/games/cant-stop/utils/helpers";
 
 interface DiceRollerProps {
     diceValues: number[];
     isRolling?: boolean;
     canRoll?: boolean;
-    onRoll?: () => void;
     showCombinations?: boolean;
     availableCombinations?: number[][];
     selectedCombination?: number[] | null;
     onCombinationSelect?: (combination: number[]) => void;
-    onCombinationConfirm?: () => void;
     isSubmitting?: boolean;
+    onDiceRoll?: (event: React.FormEvent<HTMLFormElement>) => void;
+    gamePhase?: string;
+    isCurrentTurn?: boolean;
+}
+
+// サイコロの組み合わせを計算するローカル関数
+function calculateDiceCombinations(diceValues: number[]): number[][] {
+    if (diceValues.length !== 4) return [];
+    
+    const [d1, d2, d3, d4] = diceValues;
+    
+    // 3つの可能な組み合わせ
+    return [
+        [d1 + d2, d3 + d4].sort((a, b) => a - b),
+        [d1 + d3, d2 + d4].sort((a, b) => a - b),
+        [d1 + d4, d2 + d3].sort((a, b) => a - b)
+    ];
 }
 
 export function DiceRoller({
     diceValues,
     isRolling = false,
     canRoll = false,
-    onRoll,
     showCombinations = false,
     availableCombinations = [],
     selectedCombination,
     onCombinationSelect,
-    onCombinationConfirm,
-    isSubmitting = false
+    isSubmitting = false,
+    onDiceRoll,
+    gamePhase,
+    isCurrentTurn = false
 }: DiceRollerProps) {
     const [animatingDice, setAnimatingDice] = useState<boolean[]>([]);
     const [showDiceAnimation, setShowDiceAnimation] = useState(false);
@@ -101,16 +116,6 @@ export function DiceRoller({
     };
 
     /**
-     * 組み合わせが選択可能かチェック
-     */
-    const isCombinationAvailable = (combination: number[]): boolean => {
-        return availableCombinations.some(available => 
-            available.length === combination.length &&
-            available.every((val, index) => val === combination[index])
-        );
-    };
-
-    /**
      * 組み合わせが選択されているかチェック
      */
     const isCombinationSelected = (combination: number[]): boolean => {
@@ -119,9 +124,6 @@ export function DiceRoller({
                selectedCombination.every((val, index) => val === combination[index]);
     };
 
-    // 全組み合わせを計算
-    const allCombinations = diceValues.length === 4 ? calculateDiceCombinations(diceValues) : [];
-
     return (
         <div className="bg-white rounded-lg border border-gray-200 p-6">
             <h3 className="text-lg font-semibold text-gray-900 mb-4">サイコロ</h3>
@@ -129,7 +131,7 @@ export function DiceRoller({
             {/* サイコロ表示 */}
             <div className="flex justify-center mb-6">
                 <div className="flex space-x-3">
-                    {diceValues.length > 0 ? (
+                    {diceValues.length === 4 ? (
                         diceValues.map((value, index) => renderDiceFace(value, index))
                     ) : (
                         // 初期状態（サイコロが振られていない）
@@ -160,122 +162,112 @@ export function DiceRoller({
             {/* サイコロを振るボタン */}
             {canRoll && (
                 <div className="text-center mb-6">
-                    {onRoll ? (
+                    <Form method="post" onSubmit={onDiceRoll}>
+                        <input type="hidden" name="_action" value="roll_dice" />
                         <button
-                            type="button"
-                            onClick={onRoll}
-                            disabled={isRolling || isSubmitting}
+                            type="submit"
+                            disabled={isRolling || isSubmitting || !canRoll}
                             className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors"
                         >
                             {isRolling ? 'サイコロを振っています...' : 'サイコロを振る'}
                         </button>
-                    ) : (
-                        <Form method="post">
-                            <input type="hidden" name="_action" value="roll_dice" />
-                            <button
-                                type="submit"
-                                disabled={isRolling || isSubmitting}
-                                className="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors"
-                            >
-                                {isRolling ? 'サイコロを振っています...' : 'サイコロを振る'}
-                            </button>
-                        </Form>
-                    )}
+                    </Form>
                 </div>
             )}
 
             {/* 組み合わせ選択 */}
-            {showCombinations && allCombinations.length > 0 && (
+            {showCombinations && availableCombinations.length > 0 && (
                 <div>
-                    <h4 className="text-md font-medium text-gray-900 mb-3">組み合わせ選択</h4>
-                    
-                    {availableCombinations.length > 0 ? (
-                        <div className="space-y-2 mb-4">
-                            {allCombinations.map((combination, index) => {
-                                const isAvailable = isCombinationAvailable(combination);
-                                const isSelected = isCombinationSelected(combination);
-                                
-                                return (
-                                    <button
-                                        key={index}
-                                        type="button"
-                                        onClick={() => isAvailable && onCombinationSelect?.(combination)}
-                                        disabled={!isAvailable || isSubmitting}
-                                        className={`
-                                            w-full p-3 rounded-lg border-2 text-left transition-all duration-200
-                                            ${isSelected ? 
-                                                'border-indigo-500 bg-indigo-50 text-indigo-900' :
-                                                isAvailable ? 
-                                                    'border-gray-300 bg-white hover:border-indigo-300 hover:bg-indigo-50' :
-                                                    'border-gray-200 bg-gray-50 text-gray-400 cursor-not-allowed'
-                                            }
-                                        `}
-                                    >
-                                        <div className="flex items-center justify-between">
-                                            <span className="font-medium">
-                                                コラム {getCombinationText(combination)}
-                                            </span>
-                                            <div className="flex space-x-2">
-                                                {combination.map((col, colIndex) => (
-                                                    <span 
-                                                        key={colIndex}
-                                                        className={`
-                                                            px-2 py-1 rounded text-xs
-                                                            ${isSelected ? 'bg-indigo-200 text-indigo-800' :
-                                                              isAvailable ? 'bg-gray-200 text-gray-700' :
-                                                              'bg-gray-100 text-gray-500'}
-                                                        `}
-                                                    >
-                                                        {col}
-                                                    </span>
-                                                ))}
-                                            </div>
-                                        </div>
-                                        {!isAvailable && (
-                                            <div className="text-xs text-gray-500 mt-1">
-                                                使用不可（完成済みまたは一時マーカー制限）
-                                            </div>
-                                        )}
-                                    </button>
-                                );
-                            })}
-                        </div>
-                    ) : (
-                        <div className="text-center p-4 bg-red-50 border border-red-200 rounded-lg">
-                            <div className="text-red-600 font-medium mb-1">バスト！</div>
-                            <div className="text-sm text-red-500">
-                                進行可能な組み合わせがありません
-                            </div>
-                        </div>
-                    )}
-
-                    {/* 組み合わせ確定ボタン */}
-                    {selectedCombination && onCombinationConfirm && (
-                        <div className="text-center">
-                            <button
-                                type="button"
-                                onClick={onCombinationConfirm}
-                                disabled={isSubmitting}
-                                className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors"
+                    <h4 className="text-md font-semibold text-gray-900 mb-3">利用可能な組み合わせ</h4>
+                    <div className="grid grid-cols-1 gap-2">
+                        {availableCombinations.map((combination, index) => (
+                            <div
+                                key={index}
+                                className={`
+                                    p-3 rounded-lg border-2 transition-all duration-200 font-medium cursor-pointer
+                                    ${isCombinationSelected(combination)
+                                        ? 'border-indigo-500 bg-indigo-50 text-indigo-700'
+                                        : 'border-gray-200 bg-gray-50 text-gray-700 hover:border-indigo-300 hover:bg-indigo-25'
+                                    }
+                                    ${isSubmitting ? 'opacity-50 cursor-not-allowed' : ''}
+                                `}
+                                onClick={() => !isSubmitting && onCombinationSelect?.(combination)}
                             >
-                                組み合わせを確定
-                            </button>
+                                コラム {getCombinationText(combination)}
+                            </div>
+                        ))}
+                    </div>
+                    
+                    {/* 組み合わせ確定ボタン */}
+                    {selectedCombination && isCurrentTurn && (
+                        <div className="mt-4 text-center">
+                            <Form method="post">
+                                <input type="hidden" name="_action" value="choose_combination" />
+                                <input type="hidden" name="combination" value={JSON.stringify(selectedCombination)} />
+                                <button
+                                    type="submit"
+                                    disabled={isSubmitting}
+                                    className="px-6 py-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-400 text-white rounded-lg font-medium transition-colors"
+                                >
+                                    {isSubmitting ? '処理中...' : '組み合わせを確定'}
+                                </button>
+                            </Form>
                         </div>
                     )}
                 </div>
             )}
 
-            {/* 組み合わせの説明 */}
-            {diceValues.length === 4 && !showCombinations && (
-                <div className="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg">
-                    <div className="text-sm text-blue-800">
-                        <div className="font-medium mb-1">可能な組み合わせ:</div>
-                        {allCombinations.map((combination, index) => (
-                            <div key={index} className="text-xs">
-                                • {getCombinationText(combination)}
-                            </div>
-                        ))}
+            {/* 進む/ストップボタン */}
+            {gamePhase === 'deciding' && isCurrentTurn && (
+                <div className="mt-6">
+                    <div className="grid grid-cols-2 gap-4">
+                        <Form method="post">
+                            <input type="hidden" name="_action" value="continue" />
+                            <button
+                                type="submit"
+                                disabled={isSubmitting}
+                                className="w-full bg-indigo-600 hover:bg-indigo-700 disabled:bg-gray-400 text-white font-medium py-3 px-4 rounded-lg transition-colors"
+                            >
+                                進む
+                            </button>
+                        </Form>
+                        
+                        <Form method="post">
+                            <input type="hidden" name="_action" value="stop" />
+                            <button
+                                type="submit"
+                                disabled={isSubmitting}
+                                className="w-full bg-red-600 hover:bg-red-700 disabled:bg-gray-400 text-white font-medium py-3 px-4 rounded-lg transition-colors"
+                            >
+                                ストップ
+                            </button>
+                        </Form>
                     </div>
+                </div>
+            )}
+
+            {/* 組み合わせがない場合（バスト） */}
+            {showCombinations && availableCombinations.length === 0 && diceValues.length === 4 && (
+                <div className="text-center p-4 bg-red-50 border border-red-200 rounded-lg">
+                    <div className="text-red-600 font-medium mb-2">
+                        バスト！
+                    </div>
+                    <div className="text-sm text-red-500">
+                        進行可能な組み合わせがありません
+                    </div>
+                </div>
+            )}
+
+            {/* デバッグ情報（開発用） */}
+            {process.env.NODE_ENV === 'development' && (
+                <div className="mt-4 p-3 bg-gray-100 rounded text-xs">
+                    <div>canRoll: {canRoll.toString()}</div>
+                    <div>showCombinations: {showCombinations.toString()}</div>
+                    <div>availableCombinations: {availableCombinations.length}</div>
+                    <div>selectedCombination: {selectedCombination ? JSON.stringify(selectedCombination) : 'null'}</div>
+                    <div>diceValues: [{diceValues.join(', ')}]</div>
+                    <div>isSubmitting: {isSubmitting.toString()}</div>
+                    <div>onCombinationSelect: {onCombinationSelect ? 'available' : 'null'}</div>
                 </div>
             )}
         </div>

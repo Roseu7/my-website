@@ -186,7 +186,7 @@ export function createGameLogMessage(
         case 'bust':
             return 'バスト！一時進行がリセットされました';
         case 'column_completed':
-            return `コラム${data?.column}を完成`;
+            return `コラム${data?.column}を完成させました`;
         case 'victory':
             return `${data?.columns}つのコラムを完成させて勝利！`;
         default:
@@ -195,10 +195,10 @@ export function createGameLogMessage(
 }
 
 /**
- * ローカルストレージヘルパー（ブラウザ環境でのみ動作）
+ * セッション管理用のローカルストレージヘルパー
  */
-export const localStorageHelper = {
-    get: (key: string, defaultValue: any = null) => {
+export const storage = {
+    get: <T>(key: string, defaultValue: T): T => {
         if (typeof window === 'undefined') return defaultValue;
         
         try {

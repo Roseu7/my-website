@@ -35,20 +35,25 @@ export class CantStopRealtimeClient {
     };
     private reconnectTimeouts: NodeJS.Timeout[] = [];
     private reconnectAttempts = 0;
-    private maxReconnectAttempts = 5;
+    private maxReconnectAttempts = 5; // 試行回数を減らす
     private isDestroyed = false;
+    private isInitialized = false;
 
     constructor(roomId: string) {
         this.roomId = roomId;
         
         console.log('CantStopRealtimeClient初期化開始 - roomId:', roomId);
         
+        // 重複初期化防止
+        if (this.isInitialized) {
+            console.warn('既に初期化されているクライアントです');
+            return;
+        }
+        this.isInitialized = true;
+        
         try {
             this.supabase = getSupabaseBrowserClient();
             console.log('Supabaseクライアントを初期化しました');
-            
-            // Supabaseの設定情報をログ出力
-            console.log('Supabase URL確認:', import.meta.env.VITE_SUPABASE_URL?.substring(0, 30) + '...');
         } catch (error) {
             console.error('Supabaseクライアントの初期化に失敗:', error);
             this.supabase = null;
@@ -57,7 +62,7 @@ export class CantStopRealtimeClient {
             this.connectionState.lastError = 'Supabaseクライアントの初期化に失敗しました';
         }
 
-        // ページの可視性変更を監視
+        // ページの可視性変更を監視（より安全に）
         if (typeof document !== 'undefined') {
             document.addEventListener('visibilitychange', this.handleVisibilityChange.bind(this));
         }
@@ -74,6 +79,8 @@ export class CantStopRealtimeClient {
     private handleVisibilityChange() {
         if (document.visibilityState === 'visible') {
             console.log('ページが表示されました。接続状態を確認します');
+            // 再接続試行回数をリセット
+            this.reconnectAttempts = 0;
             this.checkAndReconnect();
         }
     }
@@ -94,11 +101,11 @@ export class CantStopRealtimeClient {
     }
 
     /**
-     * 再接続の試行
+     * 再接続の試行（より穏やかに）
      */
     private attemptReconnect() {
         if (this.isDestroyed || this.reconnectAttempts >= this.maxReconnectAttempts) {
-            console.log('再接続の最大試行回数に達しました');
+            console.log(`再接続を停止します (試行回数: ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
             this.connectionState.room = 'error';
             this.connectionState.game = 'error';
             this.connectionState.lastError = '再接続に失敗しました';
@@ -106,19 +113,22 @@ export class CantStopRealtimeClient {
         }
 
         this.reconnectAttempts++;
-        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts - 1), 10000);
+        // さらに長い間隔で再接続を試行
+        const delay = Math.min(5000 * this.reconnectAttempts, 60000); // 5秒から60秒まで
 
         console.log(`再接続を試行します (${this.reconnectAttempts}/${this.maxReconnectAttempts}) - ${delay}ms後`);
 
         const timeoutId = setTimeout(() => {
             if (!this.isDestroyed) {
-                this.cleanup();
-                // 少し待ってから再初期化
+                console.log('再接続実行中...');
+                this.unsubscribeAll();
+                // より長い待機時間
                 setTimeout(() => {
                     if (!this.isDestroyed) {
+                        console.log('チャンネル再初期化中...');
                         this.initializeChannels();
                     }
-                }, 500);
+                }, 3000);
             }
         }, delay);
 
@@ -126,21 +136,28 @@ export class CantStopRealtimeClient {
     }
 
     /**
-     * チャンネルの初期化
+     * チャンネルの初期化（シンプル化）
      */
     private initializeChannels() {
-        if (!this.supabase) {
+        if (!this.supabase || this.isDestroyed) {
             console.error('Supabaseクライアントが初期化されていません');
             this.connectionState.lastError = 'Supabaseクライアントが利用できません';
             return;
         }
 
         try {
-            // ルームチャンネルの初期化（シンプルな設定）
-            this.roomChannel = this.supabase.channel(`room-${this.roomId}`);
+            // より軽量な設定でチャンネルを初期化
+            this.roomChannel = this.supabase.channel(`room-${this.roomId}`, {
+                config: {
+                    broadcast: { self: false }
+                }
+            });
 
-            // ゲームチャンネルの初期化（シンプルな設定）
-            this.gameChannel = this.supabase.channel(`game-${this.roomId}`);
+            this.gameChannel = this.supabase.channel(`game-${this.roomId}`, {
+                config: {
+                    broadcast: { self: false }
+                }
+            });
 
             console.log('チャンネルを初期化しました');
         } catch (error) {
@@ -171,7 +188,6 @@ export class CantStopRealtimeClient {
         callbacks.onConnectionStateChanged?.(this.connectionState);
 
         this.roomChannel
-            // ブロードキャストイベントを監視（postgres_changesの代わり）
             .on('broadcast', { event: 'participant_update' }, (payload) => {
                 console.log('参加者の変更を受信:', payload);
                 callbacks.onParticipantChanged?.(payload.payload.participants || []);
@@ -189,29 +205,19 @@ export class CantStopRealtimeClient {
                 
                 if (status === 'SUBSCRIBED') {
                     this.connectionState.room = 'connected';
-                    this.reconnectAttempts = 0; // 成功時はリセット
+                    this.reconnectAttempts = 0;
                     console.log('ルームチャンネルに正常に接続しました');
-                } else if (status === 'CHANNEL_ERROR') {
+                } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
                     this.connectionState.room = 'error';
-                    this.connectionState.lastError = 'ルームチャンネルでエラーが発生しました';
-                    console.error('ルームチャンネルでエラーが発生:', status);
+                    this.connectionState.lastError = `ルームチャンネル: ${status}`;
+                    console.error('ルームチャンネルでエラー:', status);
                     
-                    // エラー時は再接続を試行
-                    setTimeout(() => this.attemptReconnect(), 1000);
-                } else if (status === 'TIMED_OUT') {
-                    this.connectionState.room = 'error';
-                    this.connectionState.lastError = 'ルームチャンネルの接続がタイムアウトしました';
-                    console.error('ルームチャンネルの接続がタイムアウト');
-                    
-                    // タイムアウト時も再接続を試行
-                    setTimeout(() => this.attemptReconnect(), 2000);
-                } else if (status === 'CLOSED') {
-                    this.connectionState.room = 'disconnected';
-                    this.connectionState.lastError = 'ルームチャンネルが閉じられました';
-                    console.warn('ルームチャンネルが閉じられました');
-                    
-                    // 閉じられた場合も再接続を試行
-                    setTimeout(() => this.attemptReconnect(), 3000);
+                    // エラー時の再接続は最初の数回のみ
+                    if (this.reconnectAttempts < 2) {
+                        setTimeout(() => this.attemptReconnect(), 10000);
+                    } else {
+                        console.log('ルームチャンネルの再接続を停止します');
+                    }
                 } else {
                     this.connectionState.room = 'connecting';
                 }
@@ -255,29 +261,19 @@ export class CantStopRealtimeClient {
                 
                 if (status === 'SUBSCRIBED') {
                     this.connectionState.game = 'connected';
-                    this.reconnectAttempts = 0; // 成功時はリセット
+                    this.reconnectAttempts = 0;
                     console.log('ゲームチャンネルに正常に接続しました');
-                } else if (status === 'CHANNEL_ERROR') {
+                } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') {
                     this.connectionState.game = 'error';
-                    this.connectionState.lastError = 'ゲームチャンネルでエラーが発生しました';
-                    console.error('ゲームチャンネルでエラーが発生:', status);
+                    this.connectionState.lastError = `ゲームチャンネル: ${status}`;
+                    console.error('ゲームチャンネルでエラー:', status);
                     
-                    // エラー時は再接続を試行
-                    setTimeout(() => this.attemptReconnect(), 1000);
-                } else if (status === 'TIMED_OUT') {
-                    this.connectionState.game = 'error';
-                    this.connectionState.lastError = 'ゲームチャンネルの接続がタイムアウトしました';
-                    console.error('ゲームチャンネルの接続がタイムアウト');
-                    
-                    // タイムアウト時も再接続を試行
-                    setTimeout(() => this.attemptReconnect(), 2000);
-                } else if (status === 'CLOSED') {
-                    this.connectionState.game = 'disconnected';
-                    this.connectionState.lastError = 'ゲームチャンネルが閉じられました';
-                    console.warn('ゲームチャンネルが閉じられました');
-                    
-                    // 閉じられた場合も再接続を試行
-                    setTimeout(() => this.attemptReconnect(), 3000);
+                    // エラー時の再接続は最初の数回のみ
+                    if (this.reconnectAttempts < 2) {
+                        setTimeout(() => this.attemptReconnect(), 10000);
+                    } else {
+                        console.log('ゲームチャンネルの再接続を停止します');
+                    }
                 } else {
                     this.connectionState.game = 'connecting';
                 }
@@ -299,16 +295,20 @@ export class CantStopRealtimeClient {
      * 全購読の解除
      */
     unsubscribeAll() {
-        if (this.roomChannel) {
-            this.roomChannel.unsubscribe();
-            this.roomChannel = null;
-            this.connectionState.room = 'disconnected';
-        }
-        
-        if (this.gameChannel) {
-            this.gameChannel.unsubscribe();
-            this.gameChannel = null;
-            this.connectionState.game = 'disconnected';
+        try {
+            if (this.roomChannel) {
+                this.roomChannel.unsubscribe();
+                this.roomChannel = null;
+                this.connectionState.room = 'disconnected';
+            }
+            
+            if (this.gameChannel) {
+                this.gameChannel.unsubscribe();
+                this.gameChannel = null;
+                this.connectionState.game = 'disconnected';
+            }
+        } catch (error) {
+            console.error('購読解除エラー:', error);
         }
     }
 
@@ -352,10 +352,9 @@ export class CantStopRealtimeClient {
         this.reconnectAttempts = 0;
         this.unsubscribeAll();
         
-        // 少し待ってから再接続
         setTimeout(() => {
             this.checkAndReconnect();
-        }, 1000);
+        }, 2000);
     }
 }
 

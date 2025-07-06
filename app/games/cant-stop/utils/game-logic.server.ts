@@ -41,7 +41,7 @@ async function getRoomUUIDFromIdentifier(supabase: any, identifier: string): Pro
 }
 
 /**
- * サイコロを振る（修正版）
+ * サイコロを振る
  */
 export async function rollDice(
     request: Request,
@@ -51,7 +51,6 @@ export async function rollDice(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
-        // 修正: getRoomUUID → getRoomUUIDFromIdentifier
         const actualRoomId = await getRoomUUIDFromIdentifier(supabase, roomId);
 
         // 現在のゲーム状態を取得
@@ -99,7 +98,7 @@ export async function rollDice(
         const canContinue = validCombinations.length > 0;
         
         if (!canContinue) {
-            // バスト処理
+            // バスト処理：一時マーカーをクリア
             const bustGameData: GameData = {
                 ...gameData,
                 tempMarkers: {}, // 一時マーカーをクリア
@@ -112,20 +111,11 @@ export async function rollDice(
                 ]
             };
 
-            // 次のプレイヤーにターンを移す
-            const participants = await getParticipants(supabase, actualRoomId);
-            const nextPlayerId = getNextPlayer(participants, playerId);
+            // selectedCombinationがあれば削除
+            delete bustGameData.selectedCombination;
 
-            await supabase
-                .from(DB_TABLES.GAME_STATES)
-                .update({
-                    current_turn_user_id: nextPlayerId,
-                    phase: 'rolling',
-                    game_data: bustGameData,
-                    turn_number: gameState.turn_number + 1,
-                    updated_at: new Date().toISOString()
-                })
-                .eq('room_id', actualRoomId);
+            // 次のターンに移行
+            await moveToNextTurn(request, actualRoomId, playerId, bustGameData);
 
             return { 
                 success: true, 
@@ -137,15 +127,39 @@ export async function rollDice(
             };
         }
 
-        // フェーズを'choosing'に変更
-        await supabase
+        // ゲーム状態を更新
+        const { error: updateError } = await supabase
             .from(DB_TABLES.GAME_STATES)
             .update({
-                phase: 'choosing',
                 game_data: gameData,
+                phase: 'choosing',
                 updated_at: new Date().toISOString()
             })
-            .eq('room_id', actualRoomId);
+            .eq('id', gameState.id);
+
+        if (updateError) throw updateError;
+
+        // リアルタイム通知を送信
+        try {
+            await supabase
+                .channel(`game-${actualRoomId}`)
+                .send({
+                    type: 'broadcast',
+                    event: 'game_state_update',
+                    payload: {
+                        gameState: {
+                            ...gameState,
+                            game_data: gameData,
+                            phase: 'choosing',
+                            updated_at: new Date().toISOString()
+                        },
+                        action: canContinue ? 'dice_rolled' : 'bust'
+                    }
+                });
+            console.log('サイコロ振りの通知を送信しました');
+        } catch (notifyError) {
+            console.error('リアルタイム通知の送信に失敗:', notifyError);
+        }
 
         return { 
             success: true, 
@@ -165,20 +179,129 @@ export async function rollDice(
 }
 
 /**
- * 組み合わせを選択（修正版）
+ * 組み合わせを選択
  */
 export async function chooseCombination(
     request: Request,
     roomId: string,
     playerId: string,
     combination: number[]
-): Promise<DatabaseResult<void>> {
+): Promise<DatabaseResult> {
     const { supabase } = createSupabaseServerClient(request);
 
     try {
         const actualRoomId = await getRoomUUIDFromIdentifier(supabase, roomId);
 
-        // ... 残りの処理は同じ
+        // 現在のゲーム状態を取得
+        const { data: gameState, error: getError } = await supabase
+            .from(DB_TABLES.GAME_STATES)
+            .select('*')
+            .eq('room_id', actualRoomId)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+        if (getError) throw getError;
+
+        // ターンとフェーズの確認
+        if (gameState.current_turn_user_id !== playerId) {
+            return { success: false, error: "あなたのターンではありません" };
+        }
+
+        if (gameState.phase !== 'choosing') {
+            return { success: false, error: "組み合わせ選択フェーズではありません" };
+        }
+
+        // 組み合わせが有効かチェック
+        const allCombinations = calculateDiceCombinations(gameState.game_data.diceValues);
+        const validCombinations = getValidCombinations(allCombinations, gameState.game_data, playerId);
+        const isValidChoice = validCombinations.some(combo => 
+            combo.length === combination.length && 
+            combo.every(val => combination.includes(val))
+        );
+
+        if (!isValidChoice) {
+            return { success: false, error: "無効な組み合わせです" };
+        }
+
+        // 一時マーカー数の制限チェック（Can't Stopルール：最大3つまで）
+        const currentTempColumns = Object.keys(gameState.game_data.tempMarkers || {});
+        
+        // 重複を排除した新しいコラム数を計算
+        const uniqueNewColumns = [...new Set(combination)].filter(col => 
+            !currentTempColumns.includes(col.toString())
+        );
+        
+        console.log('一時マーカー制限チェック:', {
+            currentTempColumns,
+            combination,
+            uniqueNewColumns,
+            totalAfter: currentTempColumns.length + uniqueNewColumns.length
+        });
+        
+        if (currentTempColumns.length + uniqueNewColumns.length > GAME_SETTINGS.MAX_TEMP_MARKERS) {
+            return { 
+                success: false, 
+                error: `同時に進行できるコラムは最大${GAME_SETTINGS.MAX_TEMP_MARKERS}つまでです（現在${currentTempColumns.length}、追加${uniqueNewColumns.length}）` 
+            };
+        }
+
+        // ゲームデータを更新（組み合わせを記録＋一時マーカーを配置）
+        const gameData: GameData = {
+            ...gameState.game_data,
+            selectedCombination: combination,
+            tempMarkers: {
+                ...gameState.game_data.tempMarkers,
+                // 重複を排除してコラムに一時マーカーを配置
+                ...([...new Set(combination)].reduce((markers, column) => {
+                    markers[column] = playerId;
+                    return markers;
+                }, {} as { [key: number]: string }))
+            },
+            logs: [
+                ...gameState.game_data.logs,
+                { 
+                    message: createGameLogMessage('combination_selected', { combo: combination }), 
+                    playerId 
+                }
+            ]
+        };
+
+        // ゲーム状態を更新
+        const { error: updateError } = await supabase
+            .from(DB_TABLES.GAME_STATES)
+            .update({
+                game_data: gameData,
+                phase: 'deciding',
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', gameState.id);
+
+        if (updateError) throw updateError;
+
+        // リアルタイム通知を送信
+        try {
+            await supabase
+                .channel(`game-${actualRoomId}`)
+                .send({
+                    type: 'broadcast',
+                    event: 'game_state_update',
+                    payload: {
+                        gameState: {
+                            ...gameState,
+                            game_data: gameData,
+                            phase: 'deciding',
+                            updated_at: new Date().toISOString()
+                        }
+                    }
+                });
+            console.log('リアルタイム通知を送信しました');
+        } catch (notifyError) {
+            console.error('リアルタイム通知の送信に失敗:', notifyError);
+            // 通知の失敗はゲームロジックに影響しないため、続行
+        }
+
+        return { success: true };
     } catch (error) {
         console.error('組み合わせ選択エラー:', error);
         return { 
@@ -189,7 +312,7 @@ export async function chooseCombination(
 }
 
 /**
- * 進む（組み合わせを適用してコラムを進める）
+ * 進む（一時的な進行のみ）
  */
 export async function continueGame(
     request: Request,
@@ -199,7 +322,6 @@ export async function continueGame(
     const { supabase } = createSupabaseServerClient(request);
 
     try {
-        // ルームのUUIDを取得
         const actualRoomId = await getRoomUUIDFromIdentifier(supabase, roomId);
 
         // 現在のゲーム状態を取得
@@ -229,51 +351,163 @@ export async function continueGame(
 
         const gameData: GameData = { 
             ...gameState.game_data,
-            // 必須プロパティを明示的に初期化
             columns: gameState.game_data.columns || {},
             tempMarkers: gameState.game_data.tempMarkers || {},
             completedColumns: gameState.game_data.completedColumns || {},
             diceValues: gameState.game_data.diceValues || [],
             logs: gameState.game_data.logs || []
         };
-        const newLogs: GameLog[] = [];
 
-        // 各コラムに対して進行処理
+        // 各コラムに対して一時的な進行処理
         for (const column of combination) {
-            // 現在の進行状況を取得
-            const currentProgress = gameData.columns[column]?.[playerId] || 0;
-            
-            // 一時マーカーを設定
+            // 一時マーカーを配置（一時的な進行）
             gameData.tempMarkers[column] = playerId;
-            
-            // 進行状況を更新
-            if (!gameData.columns[column]) {
-                gameData.columns[column] = {};
-            }
-            gameData.columns[column][playerId] = currentProgress + 1;
+        }
 
-            // コラム完成チェック
-            if (isColumnCompleted(column, gameData.columns[column][playerId])) {
-                gameData.completedColumns[column] = playerId;
-                delete gameData.tempMarkers[column]; // 完成したら一時マーカーを削除
-                newLogs.push({
-                    message: createGameLogMessage('column_completed', { column }),
-                    playerId
+        // ログを追加
+        gameData.logs = [
+            ...gameData.logs,
+            { 
+                message: createGameLogMessage('progress'), 
+                playerId 
+            }
+        ];
+
+        // selectedCombinationを削除
+        delete gameData.selectedCombination;
+
+        // ゲーム状態を更新（まだ永続化はしない）
+        const { error: updateError } = await supabase
+            .from(DB_TABLES.GAME_STATES)
+            .update({
+                game_data: gameData,
+                phase: 'rolling', // 再度サイコロを振る
+                updated_at: new Date().toISOString()
+            })
+            .eq('id', gameState.id);
+
+        if (updateError) throw updateError;
+
+        // リアルタイム通知を送信
+        try {
+            await supabase
+                .channel(`game-${actualRoomId}`)
+                .send({
+                    type: 'broadcast',
+                    event: 'game_state_update',
+                    payload: {
+                        gameState: {
+                            ...gameState,
+                            game_data: gameData,
+                            phase: 'rolling',
+                            updated_at: new Date().toISOString()
+                        },
+                        action: 'continue'
+                    }
                 });
+            console.log('進行の通知を送信しました');
+        } catch (notifyError) {
+            console.error('リアルタイム通知の送信に失敗:', notifyError);
+        }
+
+        return { 
+            success: true, 
+            data: { gameEnded: false } // 進行時点では勝利判定しない
+        };
+    } catch (error) {
+        console.error('ゲーム進行エラー:', error);
+        return { 
+            success: false, 
+            error: error instanceof Error ? error.message : String(error) 
+        };
+    }
+}
+
+/**
+ * ターンを終了（ストップ）- 一時マーカーを永続化
+ */
+export async function stopTurn(
+    request: Request,
+    roomId: string,
+    playerId: string
+): Promise<DatabaseResult<{ gameEnded: boolean; winner?: string }>> {
+    const { supabase } = createSupabaseServerClient(request);
+
+    try {
+        const actualRoomId = await getRoomUUIDFromIdentifier(supabase, roomId);
+
+        // 現在のゲーム状態を取得
+        const { data: gameState, error: getError } = await supabase
+            .from(DB_TABLES.GAME_STATES)
+            .select('*')
+            .eq('room_id', actualRoomId)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .single();
+
+        if (getError) throw getError;
+
+        // ターンの確認
+        if (gameState.current_turn_user_id !== playerId) {
+            return { success: false, error: "あなたのターンではありません" };
+        }
+
+        const gameData: GameData = {
+            ...gameState.game_data,
+            columns: gameState.game_data.columns || {},
+            tempMarkers: gameState.game_data.tempMarkers || {},
+            completedColumns: gameState.game_data.completedColumns || {},
+            diceValues: gameState.game_data.diceValues || [],
+            logs: gameState.game_data.logs || []
+        };
+
+        const newLogs: GameLog[] = [];
+        let gameEnded = false;
+        let winner: string | undefined;
+
+        // 一時マーカーを永続化
+        for (const [column, markerId] of Object.entries(gameData.tempMarkers)) {
+            if (markerId === playerId) {
+                const columnNum = parseInt(column);
+                
+                // 現在の永続進行状況を取得
+                const currentProgress = gameData.columns[columnNum]?.[playerId] || 0;
+                const newProgress = currentProgress + 1;
+
+                // 永続進行状況を更新
+                if (!gameData.columns[columnNum]) {
+                    gameData.columns[columnNum] = {};
+                }
+                gameData.columns[columnNum][playerId] = newProgress;
+
+                console.log(`コラム${columnNum}: ${currentProgress} → ${newProgress}`);
+
+                // コラム完成チェック
+                if (isColumnCompleted(columnNum, newProgress)) {
+                    gameData.completedColumns[columnNum] = playerId;
+                    newLogs.push({ 
+                        message: createGameLogMessage('column_completed', { column: columnNum }), 
+                        playerId 
+                    });
+                    console.log(`コラム${columnNum}が完成しました！`);
+                }
             }
         }
 
-        // 勝利チェック
-        const hasWon = checkPlayerVictory(playerId, gameData);
-        let gameEnded = false;
-        let winner = undefined;
+        // 一時マーカーをクリア
+        gameData.tempMarkers = {};
 
-        if (hasWon) {
+        // 勝利チェック
+        const completedCount = Object.values(gameData.completedColumns).filter(
+            completerId => completerId === playerId
+        ).length;
+
+        if (completedCount >= GAME_SETTINGS.WINNING_COLUMNS) {
             gameEnded = true;
             winner = playerId;
             
             newLogs.push({
-                message: createGameLogMessage('victory', { columns: GAME_SETTINGS.WINNING_COLUMNS }),
+                message: createGameLogMessage('victory', { columns: completedCount }),
                 playerId
             });
 
@@ -293,89 +527,34 @@ export async function continueGame(
         // ログを追加
         gameData.logs = [
             ...gameData.logs,
-            { message: createGameLogMessage('progress'), playerId },
+            { message: createGameLogMessage('stop'), playerId },
             ...newLogs
         ];
-
-        // selectedCombinationを削除
-        delete gameData.selectedCombination;
-
-        // ゲーム状態を更新
-        const { error: updateError } = await supabase
-            .from(DB_TABLES.GAME_STATES)
-            .update({
-                game_data: gameData,
-                phase: gameEnded ? 'finished' : 'rolling',
-                updated_at: new Date().toISOString()
-            })
-            .eq('id', gameState.id);
-
-        if (updateError) throw updateError;
-
-        return { 
-            success: true, 
-            data: { gameEnded, winner } 
-        };
-    } catch (error) {
-        console.error('ゲーム進行エラー:', error);
-        return { 
-            success: false, 
-            error: error instanceof Error ? error.message : String(error) 
-        };
-    }
-}
-
-/**
- * ターンを終了（ストップ）
- */
-export async function stopTurn(
-    request: Request,
-    roomId: string,
-    playerId: string
-): Promise<DatabaseResult> {
-    const { supabase } = createSupabaseServerClient(request);
-
-    try {
-        // ルームのUUIDを取得
-        const actualRoomId = await getRoomUUIDFromIdentifier(supabase, roomId);
-
-        // 現在のゲーム状態を取得
-        const { data: gameState, error: getError } = await supabase
-            .from(DB_TABLES.GAME_STATES)
-            .select('*')
-            .eq('room_id', actualRoomId)
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .single();
-
-        if (getError) throw getError;
-
-        // ターンの確認
-        if (gameState.current_turn_user_id !== playerId) {
-            return { success: false, error: "あなたのターンではありません" };
-        }
-
-        // 一時マーカーをクリア
-        const gameData: GameData = {
-            ...gameState.game_data,
-            // 必須プロパティを明示的に初期化
-            columns: gameState.game_data.columns || {},
-            tempMarkers: {},
-            completedColumns: gameState.game_data.completedColumns || {},
-            diceValues: gameState.game_data.diceValues || [],
-            logs: [
-                ...(gameState.game_data.logs || []),
-                { message: createGameLogMessage('stop'), playerId }
-            ]
-        };
 
         // selectedCombinationがあれば削除
         delete gameData.selectedCombination;
 
-        // ゲーム状態を更新して次のターンに移行
-        await moveToNextTurn(request, actualRoomId, playerId, gameData);
+        if (!gameEnded) {
+            // ゲーム続行の場合は次のターンに移行
+            await moveToNextTurn(request, actualRoomId, playerId, gameData);
+        } else {
+            // ゲーム終了の場合は状態を更新
+            const { error: updateError } = await supabase
+                .from(DB_TABLES.GAME_STATES)
+                .update({
+                    game_data: gameData,
+                    phase: 'finished',
+                    updated_at: new Date().toISOString()
+                })
+                .eq('id', gameState.id);
 
-        return { success: true };
+            if (updateError) throw updateError;
+        }
+
+        return { 
+            success: true,
+            data: { gameEnded, winner }
+        };
     } catch (error) {
         console.error('ターン終了エラー:', error);
         return { 
@@ -411,6 +590,8 @@ async function moveToNextTurn(
 
         // 現在のゲーム状態を取得（gameDataが渡されていない場合）
         let currentGameData = gameData;
+        let gameStateId: string;
+        
         if (!currentGameData) {
             const { data: gameState, error: getError } = await supabase
                 .from(DB_TABLES.GAME_STATES)
@@ -422,23 +603,62 @@ async function moveToNextTurn(
 
             if (getError) throw getError;
             currentGameData = gameState.game_data;
+            gameStateId = gameState.id;
+        } else {
+            // gameDataが渡されている場合、最新のゲーム状態IDを取得
+            const { data: gameState, error: getError } = await supabase
+                .from(DB_TABLES.GAME_STATES)
+                .select('id')
+                .eq('room_id', roomId)
+                .order('created_at', { ascending: false })
+                .limit(1)
+                .single();
+
+            if (getError) throw getError;
+            gameStateId = gameState.id;
         }
 
-        // ゲーム状態を更新
-        const { error: updateError } = await supabase
+        // ゲーム状態を更新（SQLポリシー修正により正常に動作）
+        const { data: updatedState, error: updateError } = await supabase
             .from(DB_TABLES.GAME_STATES)
             .update({
                 current_turn_user_id: nextPlayerId,
-                turn_number: (gameData ? 1 : 0) + 1, // turn_numberを適切に更新
+                turn_number: (gameData ? 1 : 0) + 1,
                 game_data: currentGameData,
                 phase: 'rolling',
                 updated_at: new Date().toISOString()
             })
-            .eq('room_id', roomId)
-            .order('created_at', { ascending: false })
-            .limit(1);
+            .eq('id', gameStateId)
+            .select()
+            .single();
 
-        if (updateError) throw updateError;
+        if (updateError) {
+            console.error('ゲーム状態更新エラー:', updateError);
+            throw updateError;
+        }
+
+        console.log('ゲーム状態が正常に更新されました:', updatedState);
+
+        // リアルタイム通知を送信
+        try {
+            const channelName = `game-${roomId}`;
+            console.log('リアルタイム通知送信中:', channelName);
+            
+            await supabase
+                .channel(channelName)
+                .send({
+                    type: 'broadcast',
+                    event: 'game_state_update',
+                    payload: {
+                        gameState: updatedState,
+                        action: 'turn_changed',
+                        newTurnPlayer: nextPlayerId
+                    }
+                });
+            console.log('ターン移行の通知を送信しました');
+        } catch (notifyError) {
+            console.error('リアルタイム通知の送信に失敗:', notifyError);
+        }
     } catch (error) {
         console.error('ターン移行エラー:', error);
     }
@@ -526,7 +746,7 @@ async function recordGameHistory(
 /**
  * ルームの参加者一覧を取得
  */
-async function getParticipants(supabase: any, roomId: string) {
+async function getParticipants(supabase: any, roomId: string): Promise<any[]> {
     const { data: participants } = await supabase
         .from(DB_TABLES.ROOM_PARTICIPANTS)
         .select('user_id')
